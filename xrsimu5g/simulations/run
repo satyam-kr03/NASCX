@@ -1,8 +1,0 @@
-#!/bin/sh
-../out/clang-release/xrsimu5g \
-  -n /home/satyam/omnet/xrsimu5g/src:/home/satyam/omnet/inet-4.5.4/src:/home/satyam/omnet/simu5g-1.3.0/src \
-  -u Cmdenv \
-  -f /home/satyam/omnet/xrsimu5g/simulations/omnetpp_inet.ini \
-  -c WifiGdfUdp \
-  -u Qtenv 
-# for shared lib, use: opp_run -l ../src/xrsimu5g -n .:../src $*

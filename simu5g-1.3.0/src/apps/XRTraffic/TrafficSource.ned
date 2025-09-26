@@ -1,4 +1,4 @@
-package simu5g.apps.customTraffic;
+package simu5g.apps.XRTraffic;
 
 import inet.applications.contract.IApp;
 

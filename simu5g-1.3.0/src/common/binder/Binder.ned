@@ -29,4 +29,9 @@ simple Binder
         double maxDataRatePerRb @unit("Mbps") = default(1.16Mbps);
         bool printTrafficGeneratorConfig = default(false);
         @display("i=block/cogwheel");
+
+        // XR Traffic Support
+        // Maximum age (in seconds) for XR metrics to be considered fresh
+        // Metrics older than this threshold will be treated as stale
+        double xrMetricsFreshnessThreshold @unit(s) = default(0.2s);
 }

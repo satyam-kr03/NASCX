@@ -20,70 +20,19 @@ git clone https://github.com/satyam-kr03/NASCX.git
 cd NASCX
 ```
 
-2. **Install dependencies using Conda:**
+2. **Run the installation script:**
 
 ```bash
-# Create and activate environment
-conda create -n omnetpp python=3.12
-conda activate omnetpp
-
-# Install build tools
-conda install -c conda-forge bison flex python-devel
+./install.sh
 ```
 
-3. **Build OMNeT++:**
+This will automatically build OMNeT++, INET, and Simu5G, and configure your environment.
 
-```bash
-cd omnetpp-6.2.0
-
-# Create configure.user from template (required)
-cp configure.user.dist configure.user
-
-# Set up environment and build
-source setenv
-./configure
-make -j$(nproc)
-cd ..
-```
-
-4. **Build INET:**
-
-```bash
-cd inet4.5
-source ../omnetpp-6.2.0/setenv
-make makefiles
-make MODE=release -j$(nproc)
-cd ..
-```
-
-5. **Build Simu5G:**
-
-```bash
-cd simu5g-1.3.0
-source ../omnetpp-6.2.0/setenv
-make makefiles
-make MODE=release -j$(nproc)
-cd ..
-```
-
-6. **Add frameworks to your PATH:**
-
-Add these lines to your `~/.bashrc` (adjust the base path if you cloned to a different location):
-
-```bash
-echo 'source ~/NASCX/omnetpp-6.2.0/setenv > /dev/null 2>&1' >> ~/.bashrc
-echo 'source ~/NASCX/inet4.5/setenv > /dev/null 2>&1' >> ~/.bashrc
-echo 'source ~/NASCX/simu5g-1.3.0/setenv > /dev/null 2>&1' >> ~/.bashrc
-source ~/.bashrc
-```
-
-**Note:** If you cloned the repository to a different location, replace `~/NASCX` with your actual path.
+For detailed installation instructions and manual installation steps, see [INSTALL.md](INSTALL.md).
 
 ## Usage
 
-### Before Starting
-
-Always activate the conda environment when working on this project:
+Before starting, activate the conda environment:
 
 ```bash
 conda activate omnetpp
@@ -112,6 +61,14 @@ cd simu5g-1.3.0/simulations
 # Explore available examples
 ```
 
+## Uninstallation
+
+To remove the installation:
+
+```bash
+./uninstall.sh
+```
+
 ## Project Structure
 
 ```
@@ -120,52 +77,26 @@ cd simu5g-1.3.0/simulations
 ├── inet4.5/             # INET Framework
 ├── simu5g-1.3.0/        # Simu5G (5G NR simulation)
 │   └── simulations/     # Simulation scenarios
+├── install.sh           # Automated installation script
+├── uninstall.sh         # Cleanup script
+├── INSTALL.md           # Detailed installation guide
 └── README.md
 ```
+
+## Troubleshooting
+
+For detailed troubleshooting steps, see [INSTALL.md](INSTALL.md).
+
+Common issues:
+- **Commands not found**: Run `source ~/.bashrc` or restart your terminal
+- **Build errors**: Ensure conda environment is active: `conda activate omnetpp`
+- **Missing configure.user**: Run `cp configure.user.dist configure.user` in omnetpp-6.2.0/
 
 ## Configuration Notes
 
 - OMNeT++ has been pre-configured for command-line first usage
 - Python bindings are disabled by default (can be enabled in `omnetpp-6.2.0/configure.user`)
 - All frameworks are set up for release mode builds
-
-## Troubleshooting
-
-### Error: "does not look like an OMNeT++ root directory"
-
-This happens if `configure.user` is missing. Run:
-```bash
-cd omnetpp-6.2.0
-cp configure.user.dist configure.user
-source setenv
-```
-
-### Commands not found after terminal restart
-
-Make sure you've added the setenv line to `~/.bashrc` and sourced it:
-```bash
-source ~/.bashrc
-```
-
-### Build errors
-
-Ensure your conda environment is activated:
-```bash
-conda activate omnetpp
-```
-
-Clean and rebuild if needed:
-```bash
-make clean && make makefiles && make
-```
-
-### Environment conflicts
-
-If you have multiple package managers (conda, nix, etc.), make sure only conda is active:
-```bash
-conda deactivate  # deactivate all
-conda activate omnetpp  # activate only omnetpp env
-```
 
 ## Useful Commands
 

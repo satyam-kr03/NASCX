@@ -53,7 +53,7 @@ else
 fi
 
 log "Installing build dependencies..."
-conda install -c conda-forge bison flex python-devel -y
+conda install -c conda-forge bison flex -y
 
 # ------------------------------------------------------------------------------
 # 3. Build OMNeT++ 6.2.0
@@ -89,6 +89,7 @@ fi
 
 cd "$PROJECT_ROOT/inet4.5"
 # Re-source OMNeT++ setenv just in case
+source setenv
 source "$PROJECT_ROOT/omnetpp-6.2.0/setenv"
 
 make makefiles
@@ -128,7 +129,7 @@ grep -qF "$MARKER" "$BASHRC" || echo -e "\n$MARKER" >> "$BASHRC"
 # Add source commands using the absolute PROJECT_ROOT
 append_if_missing "source $PROJECT_ROOT/omnetpp-6.2.0/setenv > /dev/null 2>&1"
 append_if_missing "source $PROJECT_ROOT/inet4.5/setenv > /dev/null 2>&1"
-append_if_missing "source $PROJECT_ROOT/simu5g-1.3.0/setenv > /dev/null 2>&1"
+append_if_missing ". $PROJECT_ROOT/simu5g-1.3.0/setenv > /dev/null 2>&1"
 
 # ------------------------------------------------------------------------------
 # 7. Completion

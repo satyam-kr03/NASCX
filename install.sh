@@ -130,15 +130,13 @@ grep -qF "$MARKER" "$BASHRC" || echo -e "\n$MARKER" >> "$BASHRC"
 append_if_missing "source $PROJECT_ROOT/omnetpp-6.2.0/setenv > /dev/null 2>&1"
 append_if_missing "source $PROJECT_ROOT/inet4.5/setenv > /dev/null 2>&1"
 
-# source bashrc to apply changes
-source "$BASHRC"
-
 # ------------------------------------------------------------------------------
 # 7. Completion
 # ------------------------------------------------------------------------------
 echo -e "\n${GREEN}============================================================${NC}"
 echo -e "${GREEN}Installation Complete!${NC}"
 echo -e "${GREEN}============================================================${NC}"
-# no need now to apply changes
-echo -e "1. To start working, always activate the env: ${BLUE}conda activate $ENV_NAME${NC}"
-echo -e "2. To test, run: ${BLUE}cd simu5g-1.3.0 && . setenv && which simu5g${NC} (should point to simu5g binary)"
+echo -e "Next steps:"
+echo -e "1. Apply environment changes: ${BLUE}source ~/.bashrc${NC}"
+echo -e "2. Activate the conda environment: ${BLUE}conda activate $ENV_NAME${NC}"
+echo -e "3. To test, run: ${BLUE}cd simu5g-1.3.0 && . setenv && which simu5g${NC}"

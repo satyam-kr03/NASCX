@@ -1,4 +1,0 @@
-from .llmtool import *
-
-main()
-

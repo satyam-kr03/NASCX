@@ -79,25 +79,44 @@ fi
 log "Installing build dependencies..."
 if [[ "$WITH_QTENV" == "yes" ]]; then
     log "Installing Qt5 for GUI support..."
-    conda install -c conda-forge bison flex qt5 -y
+    conda install -c conda-forge bison flex pyqt=5 -y
 else
     conda install -c conda-forge bison flex -y
 fi
 
 # ------------------------------------------------------------------------------
-# 4. Build OMNeT++ 6.2.0
+# 4. Download and Build OMNeT++ 6.2.0
 # ------------------------------------------------------------------------------
-log "Building OMNeT++ 6.2.0..."
+OMNETPP_VERSION="6.2.0"
+OMNETPP_DIR="$PROJECT_ROOT/omnetpp-6.2.0"
+OMNETPP_TGZ="omnetpp-${OMNETPP_VERSION}-linux-x86_64.tgz"
+OMNETPP_URL="https://github.com/omnetpp/omnetpp/releases/download/omnetpp-${OMNETPP_VERSION}/${OMNETPP_TGZ}"
 
-if [ ! -d "$PROJECT_ROOT/omnetpp-6.2.0" ]; then
-    error "Directory omnetpp-6.2.0 not found in $PROJECT_ROOT"
+if [ ! -d "$OMNETPP_DIR" ]; then
+    log "OMNeT++ ${OMNETPP_VERSION} not found. Downloading..."
+    cd "$PROJECT_ROOT"
+    
+    if [ ! -f "$OMNETPP_TGZ" ]; then
+        wget "$OMNETPP_URL" || error "Failed to download OMNeT++"
+    fi
+    
+    log "Extracting OMNeT++..."
+    tar xzf "$OMNETPP_TGZ" || error "Failed to extract OMNeT++"
+    
+    log "Cleaning up downloaded archive..."
+    rm -f "$OMNETPP_TGZ"
+else
+    log "OMNeT++ ${OMNETPP_VERSION} directory already exists."
 fi
 
-cd "$PROJECT_ROOT/omnetpp-6.2.0"
+log "Building OMNeT++ ${OMNETPP_VERSION}..."
+cd "$OMNETPP_DIR"
 
-# Copy configure.user.dist to configure.user
-log "Generating configure.user with selected options..."
-cp configure.user.dist configure.user
+# Copy configure.user.dist to configure.user if it doesn't exist
+if [ ! -f "configure.user" ]; then
+    log "Generating configure.user with selected options..."
+    cp configure.user.dist configure.user
+fi
 
 # Modify configure.user based on GUI choice
 sed -i "s/^WITH_QTENV=.*/WITH_QTENV=$WITH_QTENV/" configure.user
@@ -107,6 +126,11 @@ log "Configuration: WITH_QTENV=$WITH_QTENV, WITH_OSG=$WITH_OSG"
 
 # Source setenv to set up PATH and libraries for the build process
 source setenv
+
+# Install Python requirements for OMNeT++ AFTER sourcing setenv
+# This ensures packages are installed for the Python that configure will find
+log "Installing Python requirements for OMNeT++..."
+python3 -m pip install --upgrade -r "$OMNETPP_DIR/python/requirements.txt"
 
 # Configure and Build
 ./configure
@@ -124,7 +148,7 @@ fi
 cd "$PROJECT_ROOT/inet4.5"
 # Re-source OMNeT++ setenv just in case
 source setenv
-source "$PROJECT_ROOT/omnetpp-6.2.0/setenv"
+source "$OMNETPP_DIR/setenv"
 
 make makefiles
 make MODE=release -j$(nproc)
@@ -139,7 +163,7 @@ if [ ! -d "$PROJECT_ROOT/simu5g-1.3.0" ]; then
 fi
 
 cd "$PROJECT_ROOT/simu5g-1.3.0"
-source "$PROJECT_ROOT/omnetpp-6.2.0/setenv"
+source "$OMNETPP_DIR/setenv"
 
 make makefiles
 make MODE=release -j$(nproc)
@@ -161,7 +185,7 @@ append_if_missing() {
 grep -qF "$MARKER" "$BASHRC" || echo -e "\n$MARKER" >> "$BASHRC"
 
 # Add source commands using the absolute PROJECT_ROOT
-append_if_missing "source $PROJECT_ROOT/omnetpp-6.2.0/setenv > /dev/null 2>&1"
+append_if_missing "source $OMNETPP_DIR/setenv > /dev/null 2>&1"
 append_if_missing "source $PROJECT_ROOT/inet4.5/setenv > /dev/null 2>&1"
 
 # ------------------------------------------------------------------------------

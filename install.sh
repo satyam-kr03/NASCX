@@ -79,9 +79,9 @@ fi
 log "Installing build dependencies..."
 if [[ "$WITH_QTENV" == "yes" ]]; then
     log "Installing Qt5 for GUI support..."
-    conda install -c conda-forge bison flex pyqt=5 -y
+    conda install -c conda-forge bison flex pyqt=5 python-devtools -y
 else
-    conda install -c conda-forge bison flex -y
+    conda install -c conda-forge bison flex python-devtools -y
 fi
 
 # ------------------------------------------------------------------------------

@@ -70,12 +70,12 @@ CXXFLAGS=-std=c++17
 #
 # Set to "yes" to enable the Qt based graphical runtime environment (Qtenv)
 #
-WITH_QTENV=yes
+WITH_QTENV=no
 
 #
 # Set to "yes" to enable OpenSceneGraph and support in Qtenv
 #
-WITH_OSG=yes
+WITH_OSG=no
 
 #
 # Set to "yes" to enable osgEarth support in Qtenv (requires OpenScreenGraph enabled)
@@ -93,7 +93,7 @@ WITH_NETBUILDER=yes
 # `opp_charttool` functioning properly. Setting to "yes" requires the python-dev package
 # to be installed.
 #
-WITH_SCAVE_PYTHON_BINDINGS=yes
+WITH_SCAVE_PYTHON_BINDINGS=no
 
 #
 # Set to "yes" to allow the use of LibXML2. OMNeT++ will only use LibXML for loading

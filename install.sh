@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# NASCX Installer: OMNeT++ 6.2.0, INET 4.5.4, Simu5G 1.3.0
+# Installer: OMNeT++ 6.2.0, INET 4.5.4, Simu5G 1.3.0
 # ==============================================================================
 
 set -e  # Exit immediately if a command exits with a non-zero status
@@ -16,7 +16,7 @@ NC='\033[0m' # No Color
 PROJECT_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 log() {
-    echo -e "${BLUE}[NASCX Installer]${NC} $1"
+    echo -e "${BLUE}[Installer]${NC} $1"
 }
 
 error() {
@@ -41,7 +41,7 @@ eval "$(conda shell.bash hook)"
 # ------------------------------------------------------------------------------
 # 2. GUI Installation Option
 # ------------------------------------------------------------------------------
-echo -e "${BLUE}[NASCX Installer]${NC} Do you want to install OMNeT++ with GUI support (IDE)?"
+echo -e "${BLUE}[Installer]${NC} Do you want to install OMNeT++ with GUI support (IDE)?"
 echo -e "  This requires Qt libraries and will enable the graphical IDE."
 echo -e "  Choose 'no' for headless/command-line only installation."
 read -p "Install with GUI support? (yes/no) [default: no]: " GUI_CHOICE
@@ -132,6 +132,12 @@ source setenv
 log "Installing Python requirements for OMNeT++..."
 python3 -m pip install --upgrade -r "$OMNETPP_DIR/python/requirements.txt"
 
+# Ensure conda's lib directory is in the library path for Python embedding support
+# This is needed because conda's python3-config assumes libpython is in a standard path
+# LIBRARY_PATH is used at link time, LD_LIBRARY_PATH at runtime
+export LIBRARY_PATH="$CONDA_PREFIX/lib:$LIBRARY_PATH"
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
+
 # Configure and Build
 ./configure
 make -j$(nproc)
@@ -174,7 +180,7 @@ make MODE=release -j$(nproc)
 log "Configuring ~/.bashrc for persistence..."
 
 BASHRC="$HOME/.bashrc"
-MARKER="# NASCX Environment Variables"
+MARKER="# Omnet++ Environment Variables"
 
 # Helper function to append safely
 append_if_missing() {

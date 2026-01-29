@@ -39,7 +39,31 @@ fi
 eval "$(conda shell.bash hook)"
 
 # ------------------------------------------------------------------------------
-# 2. Conda Environment Setup
+# 2. GUI Installation Option
+# ------------------------------------------------------------------------------
+echo -e "${BLUE}[NASCX Installer]${NC} Do you want to install OMNeT++ with GUI support (IDE)?"
+echo -e "  This requires Qt libraries and will enable the graphical IDE."
+echo -e "  Choose 'no' for headless/command-line only installation."
+read -p "Install with GUI support? (yes/no) [default: no]: " GUI_CHOICE
+
+# Default to 'no' if empty
+GUI_CHOICE=${GUI_CHOICE:-no}
+
+# Normalize input
+GUI_CHOICE=$(echo "$GUI_CHOICE" | tr '[:upper:]' '[:lower:]')
+
+if [[ "$GUI_CHOICE" == "yes" || "$GUI_CHOICE" == "y" ]]; then
+    WITH_QTENV="yes"
+    WITH_OSG="yes"
+    log "GUI support enabled. Qt libraries will be required."
+else
+    WITH_QTENV="no"
+    WITH_OSG="no"
+    log "GUI support disabled. Command-line only installation."
+fi
+
+# ------------------------------------------------------------------------------
+# 3. Conda Environment Setup
 # ------------------------------------------------------------------------------
 ENV_NAME="omnetpp"
 
@@ -53,10 +77,15 @@ else
 fi
 
 log "Installing build dependencies..."
-conda install -c conda-forge bison flex -y
+if [[ "$WITH_QTENV" == "yes" ]]; then
+    log "Installing Qt5 for GUI support..."
+    conda install -c conda-forge bison flex qt5 -y
+else
+    conda install -c conda-forge bison flex -y
+fi
 
 # ------------------------------------------------------------------------------
-# 3. Build OMNeT++ 6.2.0
+# 4. Build OMNeT++ 6.2.0
 # ------------------------------------------------------------------------------
 log "Building OMNeT++ 6.2.0..."
 
@@ -66,10 +95,15 @@ fi
 
 cd "$PROJECT_ROOT/omnetpp-6.2.0"
 
-# Copy configure.user if it doesn't exist
-if [ ! -f "configure.user" ]; then
-    cp configure.user.dist configure.user
-fi
+# Copy configure.user.dist to configure.user
+log "Generating configure.user with selected options..."
+cp configure.user.dist configure.user
+
+# Modify configure.user based on GUI choice
+sed -i "s/^WITH_QTENV=.*/WITH_QTENV=$WITH_QTENV/" configure.user
+sed -i "s/^WITH_OSG=.*/WITH_OSG=$WITH_OSG/" configure.user
+
+log "Configuration: WITH_QTENV=$WITH_QTENV, WITH_OSG=$WITH_OSG"
 
 # Source setenv to set up PATH and libraries for the build process
 source setenv
@@ -79,7 +113,7 @@ source setenv
 make -j$(nproc)
 
 # ------------------------------------------------------------------------------
-# 4. Build INET 4.5
+# 5. Build INET 4.5
 # ------------------------------------------------------------------------------
 log "Building INET 4.5..."
 
@@ -96,7 +130,7 @@ make makefiles
 make MODE=release -j$(nproc)
 
 # ------------------------------------------------------------------------------
-# 5. Build Simu5G 1.3.0
+# 6. Build Simu5G 1.3.0
 # ------------------------------------------------------------------------------
 log "Building Simu5G 1.3.0..."
 
@@ -111,7 +145,7 @@ make makefiles
 make MODE=release -j$(nproc)
 
 # ------------------------------------------------------------------------------
-# 6. Final Configuration (Persistence)
+# 7. Final Configuration (Persistence)
 # ------------------------------------------------------------------------------
 log "Configuring ~/.bashrc for persistence..."
 
@@ -131,12 +165,19 @@ append_if_missing "source $PROJECT_ROOT/omnetpp-6.2.0/setenv > /dev/null 2>&1"
 append_if_missing "source $PROJECT_ROOT/inet4.5/setenv > /dev/null 2>&1"
 
 # ------------------------------------------------------------------------------
-# 7. Completion
+# 8. Completion
 # ------------------------------------------------------------------------------
 echo -e "\n${GREEN}============================================================${NC}"
 echo -e "${GREEN}Installation Complete!${NC}"
 echo -e "${GREEN}============================================================${NC}"
-echo -e "Next steps:"
+echo -e "Configuration: GUI Support = $WITH_QTENV"
+echo -e "\nNext steps:"
 echo -e "1. Apply environment changes: ${BLUE}source ~/.bashrc${NC}"
 echo -e "2. Activate the conda environment: ${BLUE}conda activate $ENV_NAME${NC}"
-echo -e "3. To test, run: ${BLUE}cd simu5g-1.3.0 && . setenv && which simu5g${NC}"
+if [[ "$WITH_QTENV" == "yes" ]]; then
+    echo -e "3. To launch the IDE, run: ${BLUE}omnetpp${NC}"
+    echo -e "4. To test CLI, run: ${BLUE}cd simu5g-1.3.0 && . setenv && which simu5g${NC}"
+else
+    echo -e "3. To test, run: ${BLUE}cd simu5g-1.3.0 && . setenv && which simu5g${NC}"
+    echo -e "\nNote: GUI/IDE not installed. Use command-line tools (opp_run, etc.)"
+fi

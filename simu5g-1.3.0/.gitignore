@@ -124,5 +124,7 @@ vim files
 *.swo
 .qtenvrc.*
 
+*.joblib
+
 # files for performance evaluation
 # *.ipynb

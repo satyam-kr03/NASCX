@@ -137,18 +137,129 @@ def query_model_server(num_users: int, avg_cqi: float = 14.5) -> int:
         return random.choice(COMPRESSION_LEVELS)  # Fallback to random
 
 
-def get_compression_levels(mode: str, num_users: int, seed: int) -> List[int]:
-    """Get compression levels based on selection mode."""
+def run_cqi_warmup(num_users: int, warmup_frames: int = 50, seed: int = 42) -> Dict[int, float]:
+    """Run a short warmup simulation to collect actual CQI values for each user.
+    
+    Args:
+        num_users: Number of users in the cell
+        warmup_frames: Number of frames to run for warmup (default 50)
+        seed: Random seed for compression selection
+        
+    Returns:
+        Dict mapping user_id to their average CQI value
+    """
+    random.seed(seed)
+    
+    # Create temporary directory for warmup
+    run_dir = SIMULATION_DIR / f"warmup_{num_users}_{seed}"
+    run_dir.mkdir(exist_ok=True)
+    
+    # Load PCA data
+    data_by_level = load_pca_data()
+    
+    # Use random compression for warmup
+    compression_levels = [random.choice(COMPRESSION_LEVELS) for _ in range(num_users)]
+    
+    # Generate per-user PCA files
+    user_files = []
+    for i, comp_level in enumerate(compression_levels):
+        user_file = create_user_pca_file(i, comp_level, data_by_level, run_dir)
+        user_files.append(user_file)
+    
+    # Build simulation command with reduced frame count
+    cmd = [
+        "simu5g",
+        "-r", "0",
+        "-m",
+        "-u", "Cmdenv",
+        "-c", "XR-DL-Dataset",
+        f"--*.numUe={num_users}",
+        f"--*.server.numApps={num_users}",
+        f"--*.ue[*].app[0].deadlineMs=5ms",
+        f"--*.ue[*].app[0].expectedFrames={warmup_frames}",
+    ]
+    
+    # Add per-user PCA file paths
+    for i, user_file in enumerate(user_files):
+        cmd.append(f'--*.server.app[{i}].pcaFile="{user_file}"')
+    
+    cmd.append("omnetpp.ini")
+    
+    user_cqis = {}
+    
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=SIMULATION_DIR,
+            capture_output=True,
+            text=True,
+            timeout=120000  # Shorter timeout for warmup
+        )
+        
+        output = result.stdout + result.stderr
+        
+        # Parse CQI values from output
+        cqi_pattern = re.compile(
+            r"Module:\s+\S+\.ue\[(\d+)\]\.app\[0\].*?Avg DL CQI:\s+([\d.]+)",
+            re.DOTALL
+        )
+        
+        for match in cqi_pattern.finditer(output):
+            user_id = int(match.group(1))
+            avg_cqi = float(match.group(2))
+            user_cqis[user_id] = avg_cqi
+        
+        print(f"  Warmup complete: collected CQI for {len(user_cqis)} users: {user_cqis}")
+        
+    except subprocess.TimeoutExpired:
+        print(f"  Warmup timeout, using default CQI values")
+    except Exception as e:
+        print(f"  Warmup error: {e}")
+    finally:
+        # Cleanup temp files
+        for f in run_dir.glob("*.csv"):
+            f.unlink()
+        try:
+            run_dir.rmdir()
+        except:
+            pass
+    
+    # Fill in missing users with default CQI
+    for i in range(num_users):
+        if i not in user_cqis:
+            user_cqis[i] = 14.0  # Default fallback
+    
+    return user_cqis
+
+
+def get_compression_levels(mode: str, num_users: int, seed: int, 
+                           user_cqis: Optional[Dict[int, float]] = None) -> List[int]:
+    """Get compression levels based on selection mode.
+    
+    Args:
+        mode: 'random' or 'ml'
+        num_users: Number of users
+        seed: Random seed
+        user_cqis: Optional dict of per-user CQI values (for ML mode with actual CQI)
+    """
     random.seed(seed)
     
     if mode == "random":
         # Random selection for each user
         return [random.choice(COMPRESSION_LEVELS) for _ in range(num_users)]
     elif mode == "ml":
-        # ML-guided: same optimal compression for all users based on num_users
-        # Using average CQI of 14.5 as initial estimate
-        optimal = query_model_server(num_users, avg_cqi=14.5)
-        return [optimal] * num_users
+        # ML-guided: per-user compression based on their actual CQI
+        compressions = []
+        for user_id in range(num_users):
+            if user_cqis and user_id in user_cqis:
+                cqi = user_cqis[user_id]
+            else:
+                cqi = 14.0  # Default fallback
+            
+            optimal = query_model_server(num_users, avg_cqi=cqi)
+            compressions.append(optimal)
+        
+        return compressions
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
@@ -285,13 +396,20 @@ def run_single_task(task: Dict) -> Optional[Dict]:
     """Worker function to run a single simulation task.
     
     This function is designed to be called by ProcessPoolExecutor.
+    For ML mode, runs a warmup simulation first to collect actual CQI values.
     """
     mode = task['mode']
     num_users = task['num_users']
     run_id = task['run_id']
     run_seed = task['run_seed']
     
-    compression_levels = get_compression_levels(mode, num_users, run_seed)
+    # For ML mode, run CQI warmup first
+    user_cqis = None
+    if mode == "ml":
+        print(f"  Running CQI warmup for {num_users} users...")
+        user_cqis = run_cqi_warmup(num_users, warmup_frames=50, seed=run_seed)
+    
+    compression_levels = get_compression_levels(mode, num_users, run_seed, user_cqis=user_cqis)
     result = run_simulation(num_users, compression_levels, run_id, mode)
     
     if result and result.get('success') and result.get('user_results'):
@@ -458,17 +576,35 @@ def quick_test():
     except Exception as e:
         print(f"Model server not available: {e}")
     
-    # Run single simulation for each mode
-    for mode in ["random", "ml"]:
-        print(f"\nTesting {mode} mode...")
-        compression_levels = get_compression_levels(mode, 3, seed=42)
-        print(f"  Compression levels: {compression_levels}")
-        
-        result = run_simulation(3, compression_levels, run_id=999, mode=mode)
-        if result and result.get('success'):
-            print(f"  Success! {len(result.get('user_results', []))} user results")
-        else:
-            print("  Failed!")
+    num_users = 4
+    
+    # Test random mode
+    print(f"\nTesting random mode with {num_users} users...")
+    compression_levels = get_compression_levels("random", num_users, seed=42)
+    print(f"  Compression levels: {compression_levels}")
+    
+    result = run_simulation(num_users, compression_levels, run_id=999, mode="random")
+    if result and result.get('success'):
+        print(f"  Success! {len(result.get('user_results', []))} user results")
+    else:
+        print("  Failed!")
+    
+    # Test ML mode with CQI warmup
+    print(f"\nTesting ML mode with CQI warmup ({num_users} users)...")
+    print("  Running warmup to collect actual CQI values...")
+    user_cqis = run_cqi_warmup(num_users, warmup_frames=30, seed=42)
+    print(f"  User CQIs: {user_cqis}")
+    
+    compression_levels = get_compression_levels("ml", num_users, seed=42, user_cqis=user_cqis)
+    print(f"  ML Compression levels: {compression_levels}")
+    
+    result = run_simulation(num_users, compression_levels, run_id=998, mode="ml")
+    if result and result.get('success'):
+        print(f"  Success! {len(result.get('user_results', []))} user results")
+        for ur in result.get('user_results', []):
+            print(f"    User {ur['user_id']}: CQI={ur['avg_cqi']:.2f}, Comp={ur['compression_level']}")
+    else:
+        print("  Failed!")
 
 
 if __name__ == "__main__":

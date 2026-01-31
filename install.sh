@@ -31,12 +31,35 @@ log "Starting installation in: $PROJECT_ROOT"
 # ------------------------------------------------------------------------------
 log "Checking prerequisites..."
 
-if ! command -v conda &> /dev/null; then
-    error "Conda is not installed or not in your PATH. Please install Miniconda or Anaconda first."
+# Check if conda is available
+USE_CONDA="no"
+ENV_NAME="omnetpp"
+
+if command -v conda &> /dev/null; then
+    echo -e "${BLUE}[Installer]${NC} Conda is available on your system."
+    read -p "Do you want to use a Conda environment for this installation? (yes/no) [default: yes]: " CONDA_CHOICE
+    CONDA_CHOICE=${CONDA_CHOICE:-yes}
+    CONDA_CHOICE=$(echo "$CONDA_CHOICE" | tr '[:upper:]' '[:lower:]')
+    
+    if [[ "$CONDA_CHOICE" == "yes" || "$CONDA_CHOICE" == "y" ]]; then
+        USE_CONDA="yes"
+        # Initialize Conda for this script session
+        eval "$(conda shell.bash hook)"
+        log "Conda environment will be used."
+    else
+        log "Skipping Conda. Using system Python instead."
+    fi
+else
+    log "Conda is not installed. Using system Python instead."
 fi
 
-# Initialize Conda for this script session
-eval "$(conda shell.bash hook)"
+# Check for Python if not using conda
+if [[ "$USE_CONDA" == "no" ]]; then
+    if ! command -v python3 &> /dev/null; then
+        error "Python3 is not installed or not in your PATH. Please install Python 3.x first."
+    fi
+    log "Using system Python: $(python3 --version)"
+fi
 
 # ------------------------------------------------------------------------------
 # 2. GUI Installation Option
@@ -63,25 +86,53 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 3. Conda Environment Setup
+# 3. Environment Setup (Conda or System)
 # ------------------------------------------------------------------------------
-ENV_NAME="omnetpp"
+if [[ "$USE_CONDA" == "yes" ]]; then
+    if conda info --envs | grep -q "^$ENV_NAME "; then
+        log "Conda environment '$ENV_NAME' already exists. Activating..."
+        conda activate $ENV_NAME
+    else
+        log "Creating Conda environment '$ENV_NAME' with Python 3.12..."
+        conda create -n $ENV_NAME python=3.12 -y
+        conda activate $ENV_NAME
+    fi
 
-if conda info --envs | grep -q "^$ENV_NAME "; then
-    log "Conda environment '$ENV_NAME' already exists. Activating..."
-    conda activate $ENV_NAME
+    log "Installing build dependencies via Conda..."
+    if [[ "$WITH_QTENV" == "yes" ]]; then
+        log "Installing Qt5 for GUI support..."
+        conda install -c conda-forge bison flex pyqt=5 python-devtools -y
+    else
+        conda install -c conda-forge bison flex python-devtools -y
+    fi
 else
-    log "Creating Conda environment '$ENV_NAME' with Python 3.12..."
-    conda create -n $ENV_NAME python=3.12 -y
-    conda activate $ENV_NAME
-fi
-
-log "Installing build dependencies..."
-if [[ "$WITH_QTENV" == "yes" ]]; then
-    log "Installing Qt5 for GUI support..."
-    conda install -c conda-forge bison flex pyqt=5 python-devtools -y
-else
-    conda install -c conda-forge bison flex python-devtools -y
+    log "Checking system build dependencies..."
+    # Check for required build tools
+    MISSING_DEPS=""
+    for cmd in bison flex; do
+        if ! command -v $cmd &> /dev/null; then
+            MISSING_DEPS="$MISSING_DEPS $cmd"
+        fi
+    done
+    
+    if [[ -n "$MISSING_DEPS" ]]; then
+        echo -e "${YELLOW}[WARNING]${NC} The following dependencies are missing:$MISSING_DEPS"
+        echo -e "Please install them using your system package manager."
+        echo -e "  For Debian/Ubuntu: ${BLUE}sudo apt install bison flex${NC}"
+        echo -e "  For Fedora/RHEL:   ${BLUE}sudo dnf install bison flex${NC}"
+        echo -e "  For Arch Linux:    ${BLUE}sudo pacman -S bison flex${NC}"
+        read -p "Continue anyway? (y/N): " CONTINUE_CHOICE
+        if [[ ! "$CONTINUE_CHOICE" =~ ^[Yy]$ ]]; then
+            error "Installation aborted. Please install missing dependencies first."
+        fi
+    else
+        log "All required build tools found."
+    fi
+    
+    if [[ "$WITH_QTENV" == "yes" ]]; then
+        echo -e "${YELLOW}[NOTE]${NC} For GUI support, you may need to install Qt5 development libraries:"
+        echo -e "  For Debian/Ubuntu: ${BLUE}sudo apt install qtbase5-dev qtchooser qt5-qmake qtbase5-dev-tools${NC}"
+    fi
 fi
 
 # ------------------------------------------------------------------------------
@@ -132,11 +183,13 @@ source setenv
 log "Installing Python requirements for OMNeT++..."
 python3 -m pip install --upgrade -r "$OMNETPP_DIR/python/requirements.txt"
 
-# Ensure conda's lib directory is in the library path for Python embedding support
+# If using conda, ensure conda's lib directory is in the library path for Python embedding support
 # This is needed because conda's python3-config assumes libpython is in a standard path
 # LIBRARY_PATH is used at link time, LD_LIBRARY_PATH at runtime
-export LIBRARY_PATH="$CONDA_PREFIX/lib:$LIBRARY_PATH"
-export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
+if [[ "$USE_CONDA" == "yes" && -n "$CONDA_PREFIX" ]]; then
+    export LIBRARY_PATH="$CONDA_PREFIX/lib:$LIBRARY_PATH"
+    export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
+fi
 
 # Configure and Build
 ./configure
@@ -200,14 +253,20 @@ append_if_missing "source $PROJECT_ROOT/inet4.5/setenv > /dev/null 2>&1"
 echo -e "\n${GREEN}============================================================${NC}"
 echo -e "${GREEN}Installation Complete!${NC}"
 echo -e "${GREEN}============================================================${NC}"
-echo -e "Configuration: GUI Support = $WITH_QTENV"
+echo -e "Configuration: GUI Support = $WITH_QTENV, Conda Environment = $USE_CONDA"
 echo -e "\nNext steps:"
 echo -e "1. Apply environment changes: ${BLUE}source ~/.bashrc${NC}"
-echo -e "2. Activate the conda environment: ${BLUE}conda activate $ENV_NAME${NC}"
-if [[ "$WITH_QTENV" == "yes" ]]; then
-    echo -e "3. To launch the IDE, run: ${BLUE}omnetpp${NC}"
-    echo -e "4. To test CLI, run: ${BLUE}cd simu5g-1.3.0 && . setenv && which simu5g${NC}"
+if [[ "$USE_CONDA" == "yes" ]]; then
+    echo -e "2. Activate the conda environment: ${BLUE}conda activate $ENV_NAME${NC}"
+    STEP_NUM=3
 else
-    echo -e "3. To test, run: ${BLUE}cd simu5g-1.3.0 && . setenv && which simu5g${NC}"
+    echo -e "   (No conda environment was created)"
+    STEP_NUM=2
+fi
+if [[ "$WITH_QTENV" == "yes" ]]; then
+    echo -e "$STEP_NUM. To launch the IDE, run: ${BLUE}omnetpp${NC}"
+    echo -e "$((STEP_NUM+1)). To test CLI, run: ${BLUE}cd simu5g-1.3.0 && . setenv && which simu5g${NC}"
+else
+    echo -e "$STEP_NUM. To test, run: ${BLUE}cd simu5g-1.3.0 && . setenv && which simu5g${NC}"
     echo -e "\nNote: GUI/IDE not installed. Use command-line tools (opp_run, etc.)"
 fi

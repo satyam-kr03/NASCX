@@ -44,33 +44,37 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 2. Conda Environment Removal (Interactive)
+# 2. Conda Environment Removal (Interactive - only if conda is available)
 # ------------------------------------------------------------------------------
 echo ""
-log "Checking Conda environment..."
+log "Checking for Conda..."
 
-# Initialize conda for script usage
-eval "$(conda shell.bash hook)"
+if command -v conda &> /dev/null; then
+    # Initialize conda for script usage
+    eval "$(conda shell.bash hook)"
 
-if conda info --envs | grep -q "^$ENV_NAME "; then
-    echo -e "${YELLOW}The Conda environment '$ENV_NAME' was found.${NC}"
-    read -p "Do you want to delete this environment? (y/N): " confirm
+    if conda info --envs | grep -q "^$ENV_NAME "; then
+        echo -e "${YELLOW}The Conda environment '$ENV_NAME' was found.${NC}"
+        read -p "Do you want to delete this environment? (y/N): " confirm
 
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        log "Removing Conda environment '$ENV_NAME'..."
-        
-        # Deactivate if currently active to prevent errors
-        if [[ "$CONDA_DEFAULT_ENV" == "$ENV_NAME" ]]; then
-            conda deactivate
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            log "Removing Conda environment '$ENV_NAME'..."
+            
+            # Deactivate if currently active to prevent errors
+            if [[ "$CONDA_DEFAULT_ENV" == "$ENV_NAME" ]]; then
+                conda deactivate
+            fi
+
+            conda env remove -n $ENV_NAME -y
+            success "Environment '$ENV_NAME' removed."
+        else
+            log "Skipping Conda environment removal."
         fi
-
-        conda env remove -n $ENV_NAME -y
-        success "Environment '$ENV_NAME' removed."
     else
-        log "Skipping Conda environment removal."
+        log "Conda environment '$ENV_NAME' not found. Nothing to remove."
     fi
 else
-    log "Conda environment '$ENV_NAME' not found. Nothing to remove."
+    log "Conda is not installed. Skipping Conda environment check."
 fi
 
 # ------------------------------------------------------------------------------

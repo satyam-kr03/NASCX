@@ -247,6 +247,11 @@ grep -qF "$MARKER" "$BASHRC" || echo -e "\n$MARKER" >> "$BASHRC"
 append_if_missing "source $OMNETPP_DIR/setenv > /dev/null 2>&1"
 append_if_missing "source $PROJECT_ROOT/inet4.5/setenv > /dev/null 2>&1"
 
+# Simu5G setenv requires being sourced from its directory (uses relative paths)
+append_if_missing "pushd $PROJECT_ROOT/simu5g-1.3.0 > /dev/null 2>&1"
+append_if_missing "source setenv > /dev/null 2>&1"
+append_if_missing "popd > /dev/null 2>&1"
+
 # ------------------------------------------------------------------------------
 # 8. Completion
 # ------------------------------------------------------------------------------

@@ -34,9 +34,12 @@ if [ -f "$BASHRC" ]; then
     # We use sed to delete lines containing the specific paths used in install.sh
     # We also remove the comment marker
     sed -i '/# NASCX Environment Variables/d' "$BASHRC"
+    sed -i '/# Omnet++ Environment Variables/d' "$BASHRC"
     sed -i '/omnetpp-6.2.0\/setenv/d' "$BASHRC"
     sed -i '/inet4.5\/setenv/d' "$BASHRC"
-    sed -i '/simu5g-1.3.0\/setenv/d' "$BASHRC"
+    sed -i '/simu5g-1.3.0/d' "$BASHRC"
+    sed -i '/source setenv > \/dev\/null/d' "$BASHRC"
+    sed -i '/popd > \/dev\/null/d' "$BASHRC"
 
     success ".bashrc cleaned."
 else

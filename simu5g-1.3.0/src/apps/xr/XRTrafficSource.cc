@@ -43,9 +43,6 @@ namespace simu5g
             frame_number = 0;
             sendTimer = new cMessage("sendTimer");
 
-            // Register signals
-            sentPktSignal = registerSignal("sentPkt");
-            sentBytesSignal = registerSignal("sentBytes");
 
             // Initialize binder pointer to nullptr
             binder_ = nullptr;
@@ -214,12 +211,7 @@ namespace simu5g
             // Send via UDP socket (INET takes ownership of the packet)
             socket.send(packet);
 
-            // Update statistics (only once per frame)
-            if (fragIndex == 0)
-            {
-                emit(sentPktSignal, 1);
-                emit(sentBytesSignal, (long)frameInfo.size_bytes);
-            }
+
         }
 
         EV << "Sent frame " << frameInfo.frame_number

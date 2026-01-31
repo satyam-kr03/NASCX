@@ -7,9 +7,7 @@
 #include "inet/applications/base/ApplicationBase.h"
 #include "inet/transportlayer/contract/udp/UdpSocket.h"
 #include "inet/networklayer/common/L3Address.h"
-#include <fstream>
 
-// Forward declaration for PHY access
 namespace simu5g { class LtePhyUe; }
 
 using namespace omnetpp;
@@ -27,9 +25,9 @@ namespace simu5g
         int sizeBytes;
         simtime_t genTime;
         simtime_t recvTime;
-        double delay; // in seconds
+        double delay;
         bool receivedOnTime;
-        double effectiveError; // MSE if on time, Elost if late
+        double effectiveError;
         int fragmentsReceived;
         int totalFragments;
     };
@@ -37,43 +35,21 @@ namespace simu5g
     class XRTrafficReceiver : public ApplicationBase, public UdpSocket::ICallback
     {
     private:
-        // Network parameters
         UdpSocket socket;
         int localPort;
 
-        // QoE parameters
-        double deadlineMs; // Frame deadline in milliseconds
-        double reliabilityThreshold; // Delay reliability threshold (e.g., 0.99 for 99%)
-        double elostValue; // Error penalty for lost frames (max MSE)
-        bool autoElost;    // Automatically set Elost to max MSE
+        double deadlineMs;
+        double reliabilityThreshold;
 
-        // Frame tracking
         map<int, ReceivedFrameStats> receivedFrames;
         int expectedTotalFrames;
         int nextExpectedFrame;
         bool trackingStarted;
         simtime_t firstFrameTime;
 
-        // Flag to prevent double computation
         bool qoeComputed;
 
-        // Statistics signals
-        simsignal_t rcvdPktSignal;
-        simsignal_t rcvdBytesSignal;
-        simsignal_t frameDelaySignal;
-        simsignal_t frameMseSignal;
-        simsignal_t frameErrorSignal;
-        simsignal_t frameOnTimeSignal;
-        simsignal_t meanErrorSignal;
-        simsignal_t delayReliabilitySignal;
-        simsignal_t userSatisfiedSignal;
-
-        // Result file
-        ofstream resultFile;
-        string resultFilename;
-
         // Static variables for global statistics
-        static double totalAvgMse;
         static double totalSumError;
         static int totalExpectedFrames;
         static int totalOnTimeFrames;
@@ -81,9 +57,7 @@ namespace simu5g
         static int userCount;
         static bool globalStatsPrinted;
         static int finishedCount;
-        static std::ofstream globalResultFile;
         
-        // CQI tracking
         double avgCqi_;
         LtePhyUe* phyUe_;
 
@@ -93,21 +67,24 @@ namespace simu5g
         virtual void handleMessageWhenUp(cMessage *msg) override;
         virtual void finish() override;
 
-        // Application lifecycle
         virtual void handleStartOperation(LifecycleOperation *operation) override;
         virtual void handleStopOperation(LifecycleOperation *operation) override;
         virtual void handleCrashOperation(LifecycleOperation *operation) override;
 
-        // UdpSocket::ICallback interface
         virtual void socketDataArrived(UdpSocket *socket, Packet *packet) override;
         virtual void socketErrorArrived(UdpSocket *socket, Indication *indication) override;
         virtual void socketClosed(UdpSocket *socket) override;
 
-        // Helper methods
         void processFrame(Packet *packet);
         void detectLostFrames();
         void computeAndRecordQoE();
-        double getMaxMSE();
+        
+        void printQoESummary(int totalFrames, int receivedCount, int onTimeCount,
+                             int lateCount, int lostCount, double deliveryRatio,
+                             double onTimeRatio, double lossRatio, double meanError,
+                             double sumError, double avgDelay, double delayReliability,
+                             bool userSatisfied);
+        void printGlobalQoESummary(double globalAvgMeanError, double globalDelayReliability);
 
     public:
         XRTrafficReceiver();

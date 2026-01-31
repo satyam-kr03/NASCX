@@ -8,7 +8,6 @@
 #include "inet/common/lifecycle/NodeStatus.h"
 #include "stack/phy/LtePhyUe.h"
 #include <algorithm>
-#include <fstream>
 #include <iomanip>
 #include <numeric>
 
@@ -23,7 +22,6 @@ namespace simu5g
     int XRTrafficReceiver::userCount = 0;
     bool XRTrafficReceiver::globalStatsPrinted = false;
     int XRTrafficReceiver::finishedCount = 0;
-    std::ofstream XRTrafficReceiver::globalResultFile;
 
     Define_Module(XRTrafficReceiver);
 
@@ -35,8 +33,6 @@ namespace simu5g
 
     XRTrafficReceiver::~XRTrafficReceiver()
     {
-        if (resultFile.is_open())
-            resultFile.close();
     }
 
     void XRTrafficReceiver::initialize(int stage)
@@ -54,29 +50,8 @@ namespace simu5g
             trackingStarted = false;
             userCount++;
 
-            rcvdPktSignal = registerSignal("rcvdPkt");
-            rcvdBytesSignal = registerSignal("rcvdBytes");
-            frameDelaySignal = registerSignal("frameDelay");
-            frameMseSignal = registerSignal("frameMse");
-            frameErrorSignal = registerSignal("frameError");
-            frameOnTimeSignal = registerSignal("frameOnTime");
-            meanErrorSignal = registerSignal("meanError");
-            delayReliabilitySignal = registerSignal("delayReliability");
-            userSatisfiedSignal = registerSignal("userSatisfied");
-
-            resultFilename = par("resultFile").stdstringValue();
-            if (!resultFilename.empty())
-            {
-                resultFile.open(resultFilename);
-                if (resultFile.is_open())
-                {
-                    resultFile << "frameNumber,components,mse,sizeBytes,genTime,recvTime,"
-                               << "delay_ms,receivedOnTime,effectiveError,deadline_ms" << endl;
-                }
-            }
-
-            std::cout << "XRTrafficReceiver: Initialized with deadline=" << deadlineMs
-                      << "ms, expected frames=" << expectedTotalFrames << endl;
+            EV_INFO << "XRTrafficReceiver: Initialized with deadline=" << deadlineMs
+                    << "ms, expected frames=" << expectedTotalFrames << endl;
         }
     }
 
@@ -86,7 +61,7 @@ namespace simu5g
         socket.setCallback(this);
         socket.bind(localPort);
 
-        std::cout << "XRTrafficReceiver: Socket bound to port " << localPort << endl;
+        EV_INFO << "XRTrafficReceiver: Socket bound to port " << localPort << endl;
     }
 
     void XRTrafficReceiver::handleStopOperation(LifecycleOperation *operation)
@@ -109,11 +84,9 @@ namespace simu5g
 
     void XRTrafficReceiver::socketDataArrived(UdpSocket *socket, Packet *packet)
     {
-        std::cout << "XRTrafficReceiver: Packet arrived from "
+        EV_DETAIL << "XRTrafficReceiver: Packet arrived from "
                   << packet->getTag<L3AddressInd>()->getSrcAddress()
                   << ", name: " << packet->getName() << endl;
-
-        std::cout << "Packet details: " << packet->str() << endl;
 
         processFrame(packet);
     }
@@ -136,9 +109,8 @@ namespace simu5g
         int fragIndex = header->getFragIndex();
         int totalFragments = header->getTotalFragments();
 
-        std::cout << "Extracted header: Frame=" << frameNumber
-                  << ", Components=" << components
-                  << ", FragIndex=" << fragIndex << "/" << totalFragments << endl;
+        EV_DETAIL << "Frame " << frameNumber << ": frag " << fragIndex 
+                  << "/" << totalFragments << ", components=" << components << endl;
 
         simtime_t recvTime = simTime();
 
@@ -146,7 +118,7 @@ namespace simu5g
         {
             trackingStarted = true;
             firstFrameTime = recvTime;
-            std::cout << "XRTrafficReceiver: Started tracking at t=" << recvTime << endl;
+            EV_INFO << "XRTrafficReceiver: Started tracking at t=" << recvTime << endl;
         }
 
         if (receivedFrames.find(frameNumber) == receivedFrames.end())
@@ -158,22 +130,22 @@ namespace simu5g
             stats.sizeBytes = sizeBytes;
             stats.genTime = genTime;
             stats.recvTime = recvTime;
-            stats.delay = -1; // mark as incomplete until all fragments arrive
+            stats.delay = -1;
             stats.receivedOnTime = false;
-            stats.effectiveError = 1000.0; // default penalty for frames that never complete
+            stats.effectiveError = 1000.0;
             stats.fragmentsReceived = 1;
             stats.totalFragments = totalFragments;
 
             receivedFrames[frameNumber] = stats;
 
-            std::cout << "Received first fragment " << fragIndex << "/" << totalFragments
+            EV_DETAIL << "First fragment " << fragIndex << "/" << totalFragments
                       << " of frame " << frameNumber << endl;
         }
         else
         {
             receivedFrames[frameNumber].fragmentsReceived++;
 
-            std::cout << "Received fragment " << fragIndex << "/" << totalFragments
+            EV_DETAIL << "Fragment " << fragIndex << "/" << totalFragments
                       << " of frame " << frameNumber << " (total: "
                       << receivedFrames[frameNumber].fragmentsReceived << ")" << endl;
         }
@@ -185,38 +157,11 @@ namespace simu5g
 
             bool onTime = (delay <= deadlineMs);
             receivedFrames[frameNumber].receivedOnTime = onTime;
+            receivedFrames[frameNumber].effectiveError = onTime ? mse : 1000.0;
 
-            double effectiveError;
-            if (onTime)
-            {
-                effectiveError = mse;
-            }
-            else
-            {
-                // Fixed error of 1000 for late frames
-                effectiveError = 1000.0;
-            }
-            receivedFrames[frameNumber].effectiveError = effectiveError;
-
-            emit(rcvdPktSignal, 1);
-            emit(rcvdBytesSignal, (long)sizeBytes);
-            emit(frameDelaySignal, delay);
-            emit(frameMseSignal, mse);
-            emit(frameErrorSignal, effectiveError);
-            emit(frameOnTimeSignal, onTime ? 1 : 0);
-
-            if (resultFile.is_open())
-            {
-                resultFile << frameNumber << "," << components << "," << mse << ","
-                           << sizeBytes << "," << fixed << setprecision(9) << genTime << ","
-                           << recvTime.dbl() << "," << setprecision(6) << delay << ","
-                           << (onTime ? 1 : 0) << "," << effectiveError << ","
-                           << deadlineMs << endl;
-            }
-
-            std::cout << "Frame " << frameNumber << " COMPLETE: delay=" << delay
+            EV_DETAIL << "Frame " << frameNumber << " COMPLETE: delay=" << delay
                       << "ms, onTime=" << onTime << ", MSE=" << mse
-                      << ", error=" << effectiveError << endl;
+                      << ", error=" << receivedFrames[frameNumber].effectiveError << endl;
         }
 
         delete packet;
@@ -224,6 +169,7 @@ namespace simu5g
 
     void XRTrafficReceiver::detectLostFrames()
     {
+        EV_INFO << "XRTrafficReceiver: Detecting lost frames..." << endl;
         std::cout << "XRTrafficReceiver: Detecting lost frames..." << endl;
 
         int lostCount = 0;
@@ -244,16 +190,11 @@ namespace simu5g
 
                 receivedFrames[i] = lostStats;
                 lostCount++;
-
-                if (resultFile.is_open())
-                {
-                    resultFile << i << ",0,0,0,0,0,-1,0,1000,"
-                               << deadlineMs << endl;
-                }
             }
         }
 
         std::cout << "Total lost frames: " << lostCount << " out of " << expectedTotalFrames << endl;
+        EV_INFO << "Total lost frames: " << lostCount << " out of " << expectedTotalFrames << endl;
     }
 
     void XRTrafficReceiver::computeAndRecordQoE()
@@ -273,30 +214,21 @@ namespace simu5g
         double sumError = 0.0;
         double sumDelay = 0.0;
 
-        vector<double> allErrors;
-        vector<double> delays;
-
         for (int i = 1; i <= expectedTotalFrames; i++)
         {
             const auto &stats = receivedFrames[i];
 
-            allErrors.push_back(stats.effectiveError);
             sumError += stats.effectiveError;
 
             if (stats.delay >= 0)
             {
                 receivedCount++;
-                delays.push_back(stats.delay);
                 sumDelay += stats.delay;
 
                 if (stats.receivedOnTime)
-                {
                     onTimeCount++;
-                }
                 else
-                {
                     lateCount++;
-                }
             }
             else
             {
@@ -305,7 +237,6 @@ namespace simu5g
         }
 
         double meanError = (totalFrames > 0) ? sumError / totalFrames : 0.0;
-
         double deliveryRatio = (double)receivedCount / totalFrames;
         double onTimeRatio = (double)onTimeCount / totalFrames;
         double lossRatio = (double)lostCount / totalFrames;
@@ -319,35 +250,24 @@ namespace simu5g
             qoeComputed = true;
         }
 
-        emit(meanErrorSignal, meanError);
+        double delayReliability = onTimeRatio;
+        bool userSatisfied = (delayReliability >= reliabilityThreshold);
 
-        // Calculate delay reliability and user satisfaction
-        double delayReliability = onTimeRatio;  // Percentage of frames delivered on-time
-        bool userSatisfied = (delayReliability >= reliabilityThreshold);  // 99% threshold
-        
-        emit(delayReliabilitySignal, delayReliability);
-        emit(userSatisfiedSignal, userSatisfied ? 1 : 0);
-
-        // Update global satisfied user count
-        if (userSatisfied) {
+        if (userSatisfied)
             totalSatisfiedUsers++;
-        }
 
-        recordScalar("totalFrames", totalFrames);
-        recordScalar("receivedFrames", receivedCount);
-        recordScalar("onTimeFrames", onTimeCount);
-        recordScalar("lateFrames", lateCount);
-        recordScalar("lostFrames", lostCount);
-        recordScalar("deliveryRatio", deliveryRatio);
-        recordScalar("onTimeRatio", onTimeRatio);
-        recordScalar("lossRatio", lossRatio);
-        recordScalar("meanError", meanError);
-        recordScalar("avgDelay_ms", avgDelay);
-        recordScalar("deadline_ms", deadlineMs);
-        recordScalar("delayReliability", delayReliability);
-        recordScalar("reliabilityThreshold", reliabilityThreshold);
-        recordScalar("userSatisfied", userSatisfied ? 1 : 0);
+        printQoESummary(totalFrames, receivedCount, onTimeCount, lateCount, lostCount,
+                        deliveryRatio, onTimeRatio, lossRatio, meanError, sumError,
+                        avgDelay, delayReliability, userSatisfied);
+    }
 
+    void XRTrafficReceiver::printQoESummary(int totalFrames, int receivedCount, int onTimeCount,
+                                             int lateCount, int lostCount, double deliveryRatio,
+                                             double onTimeRatio, double lossRatio, double meanError,
+                                             double sumError, double avgDelay, double delayReliability,
+                                             bool userSatisfied)
+    {
+        std::cout << std::fixed << std::setprecision(4);
         std::cout << "\n========== XR Traffic QoE Summary ==========" << endl;
         std::cout << "Module:            " << getFullPath() << endl;
         std::cout << "Total frames:      " << totalFrames << endl;
@@ -368,23 +288,20 @@ namespace simu5g
     {
         ApplicationBase::finish();
 
-        // Get average CQI from PHY layer (try nrPhy first, then phy)
+        // Get average CQI from PHY layer
         avgCqi_ = 0.0;
         try {
-            cModule *ue = getParentModule();  // app[0] is directly inside ue[x]
+            cModule *ue = getParentModule();
             if (ue != nullptr) {
                 cModule *cellularNic = ue->getSubmodule("cellularNic");
                 if (cellularNic != nullptr) {
-                    // Try NR PHY first, then LTE PHY
                     cModule *phyModule = cellularNic->getSubmodule("nrPhy");
-                    if (phyModule == nullptr) {
+                    if (phyModule == nullptr)
                         phyModule = cellularNic->getSubmodule("phy");
-                    }
                     if (phyModule != nullptr) {
                         phyUe_ = dynamic_cast<LtePhyUe*>(phyModule);
-                        if (phyUe_ != nullptr) {
+                        if (phyUe_ != nullptr)
                             avgCqi_ = phyUe_->getAverageCqi(DL);
-                        }
                     }
                 }
             }
@@ -395,37 +312,29 @@ namespace simu5g
         detectLostFrames();
         computeAndRecordQoE();
 
-        if (resultFile.is_open())
-        {
-            resultFile.close();
-        }
+        finishedCount++;
 
-        finishedCount++; // Increment BEFORE the check
-
-        if (finishedCount == userCount && !globalStatsPrinted) // Changed condition
+        if (finishedCount == userCount && !globalStatsPrinted)
         {
             double globalAvgMeanError = (totalExpectedFrames > 0) ? totalSumError / totalExpectedFrames : 0.0;
             double globalDelayReliability = (totalExpectedFrames > 0) ? (double)totalOnTimeFrames / totalExpectedFrames : 0.0;
 
-            globalResultFile.open("global_qoe.csv", std::ios::out);
-            if (globalResultFile.is_open())
-            {
-                globalResultFile << "num_users,satisfied_users,global_avg_mean_error,global_delay_reliability,total_frames,total_ontime_frames" << std::endl;
-                globalResultFile << userCount << "," << totalSatisfiedUsers << "," << globalAvgMeanError << "," 
-                               << globalDelayReliability << "," << totalExpectedFrames << "," << totalOnTimeFrames << std::endl;
-                globalResultFile.close();
-            }
-
-            std::cout << "\n========== Global XR Traffic QoE Summary ==========" << endl;
-            std::cout << "Number of users:       " << userCount << endl;
-            std::cout << "Satisfied users:       " << totalSatisfiedUsers << " / " << userCount << endl;
-            std::cout << "Total expected frames: " << totalExpectedFrames << endl;
-            std::cout << "Total on-time frames:  " << totalOnTimeFrames << endl;
-            std::cout << "Global Delay Reliab:   " << (globalDelayReliability * 100) << "%" << endl;
-            std::cout << "Global Avg Mean Error: " << globalAvgMeanError << endl;
-            std::cout << "===================================================" << endl;
+            printGlobalQoESummary(globalAvgMeanError, globalDelayReliability);
             globalStatsPrinted = true;
         }
+    }
+
+    void XRTrafficReceiver::printGlobalQoESummary(double globalAvgMeanError, double globalDelayReliability)
+    {
+        std::cout << std::fixed << std::setprecision(4);
+        std::cout << "\n========== Global XR Traffic QoE Summary ==========" << endl;
+        std::cout << "Number of users:       " << userCount << endl;
+        std::cout << "Satisfied users:       " << totalSatisfiedUsers << " / " << userCount << endl;
+        std::cout << "Total expected frames: " << totalExpectedFrames << endl;
+        std::cout << "Total on-time frames:  " << totalOnTimeFrames << endl;
+        std::cout << "Global Delay Reliab:   " << (globalDelayReliability * 100) << "%" << endl;
+        std::cout << "Global Avg Mean Error: " << globalAvgMeanError << endl;
+        std::cout << "===================================================" << endl;
     }
 
     void XRTrafficReceiver::socketErrorArrived(UdpSocket *socket, Indication *indication)
@@ -436,7 +345,7 @@ namespace simu5g
 
     void XRTrafficReceiver::socketClosed(UdpSocket *socket)
     {
-        std::cout << "Socket closed" << endl;
+        EV_INFO << "Socket closed" << endl;
     }
 
 } // namespace simu5g

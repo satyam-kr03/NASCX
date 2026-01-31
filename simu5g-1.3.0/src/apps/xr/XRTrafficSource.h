@@ -57,9 +57,6 @@ namespace simu5g
         string pcaFile;
         int compressionLevel_; // Filter by components: 0=all, else filter (5,10,15,...,80)
 
-        // Statistics
-        simsignal_t sentPktSignal;
-        simsignal_t sentBytesSignal;
 
         // ===== ADD THESE FOR BINDER SUPPORT =====
         // Reference to global Binder module

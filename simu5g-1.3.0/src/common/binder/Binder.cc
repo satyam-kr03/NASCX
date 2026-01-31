@@ -1298,12 +1298,13 @@ namespace simu5g
         XRMetrics metrics(frameNumber, mse, sizeBytes, simTime());
         xrMetrics_[nodeId] = metrics;
 
-        std::cout << "Binder::setXRMetrics - UE " << nodeId
+        EV_DETAIL << "Binder::setXRMetrics - UE " << nodeId
                   << " Frame " << frameNumber
                   << " MSE " << mse
                   << " Size " << sizeBytes << " bytes"
                   << " at t=" << simTime() << endl;
     }
+
 
     double Binder::getXRMse(MacNodeId nodeId) const
     {

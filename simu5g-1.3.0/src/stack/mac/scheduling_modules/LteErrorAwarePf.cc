@@ -45,10 +45,10 @@ namespace simu5g
 
         if (schedulerModule != nullptr)
         {
-            beta_ = schedulerModule->par("xrBeta").doubleValue();
-            gamma_ = schedulerModule->par("xrGamma").doubleValue();
-            useLogScaling_ = schedulerModule->par("xrUseLogScaling").boolValue();
-            enableErrorAwareScheduling_ = schedulerModule->par("xrEnableScheduling").boolValue();
+            beta_ = schedulerModule->par("errorAwareBeta").doubleValue();
+            gamma_ = schedulerModule->par("errorAwareGamma").doubleValue();
+            useLogScaling_ = schedulerModule->par("errorAwareUseLogScaling").boolValue();
+            enableErrorAwareScheduling_ = schedulerModule->par("errorAwareEnableScheduling").boolValue();
 
             std::cout << "Configuration loaded from NED:" << std::endl;
             std::cout << "  beta = " << beta_ << std::endl;

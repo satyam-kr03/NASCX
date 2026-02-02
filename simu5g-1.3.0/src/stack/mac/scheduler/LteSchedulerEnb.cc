@@ -951,8 +951,8 @@ LteScheduler *LteSchedulerEnb::getScheduler(SchedDiscipline discipline)
         case ERROR_AWARE_PF:
             return new LteErrorAwarePf(binder_,
                                mac_->par("pfAlpha").doubleValue(),
-                               mac_->par("xrBeta").doubleValue(),
-                               mac_->par("xrGamma").doubleValue());
+                               mac_->par("errorAwareBeta").doubleValue(),
+                               mac_->par("errorAwareGamma").doubleValue());
 
         default:
             throw cRuntimeError("LteScheduler not recognized");

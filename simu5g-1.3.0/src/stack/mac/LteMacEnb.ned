@@ -77,6 +77,12 @@ simple LteMacEnb extends LteMacBase
         // Proportional Fair parameters
         double pfAlpha = default(0.95);
 
+        // Error-Aware PF Scheduler parameters
+        double errorAwareBeta = default(0.6);    // Weight for base PF score
+        double errorAwareGamma = default(0.4);   // Weight for RMSE
+        bool errorAwareUseLogScaling = default(true);      // Use log scaling for metrics
+        bool errorAwareEnableScheduling = default(true);   // Enable/disable error-aware scheduling
+
         string pilotMode @enum(IN_CQI,MAX_CQI,AVG_CQI,MEDIAN_CQI,ROBUST_CQI) = default("ROBUST_CQI");
 
         string cellInfoModule;

@@ -16,6 +16,7 @@
 #include "stack/mac/scheduling_modules/LteDrr.h"
 #include "stack/mac/scheduling_modules/LteMaxCi.h"
 #include "stack/mac/scheduling_modules/LtePf.h"
+#include "stack/mac/scheduling_modules/LteErrorAwarePf.h"
 #include "stack/mac/scheduling_modules/LteMaxCiMultiband.h"
 #include "stack/mac/scheduling_modules/LteMaxCiOptMB.h"
 #include "stack/mac/scheduling_modules/LteMaxCiComp.h"
@@ -947,6 +948,11 @@ LteScheduler *LteSchedulerEnb::getScheduler(SchedDiscipline discipline)
             return new LteMaxCiComp(binder_);
         case ALLOCATOR_BESTFIT:
             return new LteAllocatorBestFit(binder_);
+        case ERROR_AWARE_PF:
+            return new LteErrorAwarePf(binder_,
+                               mac_->par("pfAlpha").doubleValue(),
+                               mac_->par("xrBeta").doubleValue(),
+                               mac_->par("xrGamma").doubleValue());
 
         default:
             throw cRuntimeError("LteScheduler not recognized");

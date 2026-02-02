@@ -207,6 +207,7 @@ const SchedDisciplineTable disciplines[] = {
     ELEM(MAXCI_OPT_MB),
     ELEM(MAXCI_COMP),
     ELEM(ALLOCATOR_BESTFIT),
+    ELEM(ERROR_AWARE_PF),
     ELEM(UNKNOWN_DISCIPLINE)
 };
 

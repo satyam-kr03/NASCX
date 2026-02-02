@@ -104,7 +104,8 @@ enum SchedDiscipline
     MAXCI_OPT_MB = 4;
     MAXCI_COMP = 5;
     ALLOCATOR_BESTFIT = 6;
-    UNKNOWN_DISCIPLINE = 7;
+    ERROR_AWARE_PF = 7;
+    UNKNOWN_DISCIPLINE = 8;
 };
 
 // specifies how the final CQI will be computed from the multiband ones

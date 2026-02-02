@@ -71,8 +71,8 @@ simple LteMacEnb extends LteMacBase
         //# eNb Scheduler Parameters
         //#
         // Scheduling discipline. See LteCommon.h for discipline meaning.
-        string schedulingDisciplineDl @enum(DRR,PF,MAXCI,MAXCI_MB,MAXCI_OPT_MB,MAXCI_COMP,ALLOCATOR_BESTFIT) = default("MAXCI");
-        string schedulingDisciplineUl @enum(DRR,PF,MAXCI,MAXCI_MB,MAXCI_OPT_MB,MAXCI_COMP,ALLOCATOR_BESTFIT) = default("MAXCI");
+        string schedulingDisciplineDl @enum(DRR,PF,MAXCI,MAXCI_MB,MAXCI_OPT_MB,MAXCI_COMP,ALLOCATOR_BESTFIT,ERROR_AWARE_PF) = default("MAXCI");
+        string schedulingDisciplineUl @enum(DRR,PF,MAXCI,MAXCI_MB,MAXCI_OPT_MB,MAXCI_COMP,ALLOCATOR_BESTFIT,ERROR_AWARE_PF) = default("MAXCI");
 
         // Proportional Fair parameters
         double pfAlpha = default(0.95);

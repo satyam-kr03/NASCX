@@ -152,8 +152,11 @@ eval "$(conda shell.bash hook)"
 # ------------------------------------------------------------------------------
 log "Setting up Conda environment '$ENV_NAME'..."
 
-# Configure conda to avoid ToS prompts
+# Accept Conda Terms of Service for default channels
+log "Accepting Conda Terms of Service..."
 conda config --set channel_priority flexible 2>/dev/null || true
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main 2>/dev/null || true
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r 2>/dev/null || true
 
 if conda info --envs | grep -q "^$ENV_NAME "; then
     log "Conda environment '$ENV_NAME' already exists. Activating..."

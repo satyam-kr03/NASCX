@@ -141,11 +141,6 @@ else
     source "$MINICONDA_DIR/bin/activate"
     conda init --all
     
-    # Accept terms of service
-    log "Accepting Conda terms of service..."
-    conda config --set channel_priority flexible
-    yes | conda update --all || true
-    
     log "Miniconda installed successfully."
 fi
 
@@ -156,6 +151,9 @@ eval "$(conda shell.bash hook)"
 # 5. Create and Configure Conda Environment
 # ------------------------------------------------------------------------------
 log "Setting up Conda environment '$ENV_NAME'..."
+
+# Configure conda to avoid ToS prompts
+conda config --set channel_priority flexible 2>/dev/null || true
 
 if conda info --envs | grep -q "^$ENV_NAME "; then
     log "Conda environment '$ENV_NAME' already exists. Activating..."

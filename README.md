@@ -6,10 +6,14 @@ A 5G/6G network simulation project using OMNeT++ 6.2.0, INET 4.5.4, and Simu5G 1
 
 ### Prerequisites
 
-- Linux system (Ubuntu/Debian recommended)
-- GCC/G++ compiler
-- Python 3.x
-- Miniconda or Anaconda
+- **Linux system** (Ubuntu/Debian recommended)
+- **sudo privileges** (for installing system packages)
+
+The installation script will automatically install:
+- System dependencies (bison, flex, build-essential, pkg-config, wget, git)
+- Qt6 libraries (optional, for GUI support)
+- Miniconda (if not already installed)
+- Python 3.12 environment
 
 ### Installation
 
@@ -26,9 +30,15 @@ cd NASCX
 ./install.sh
 ```
 
-This will automatically build OMNeT++, INET, and Simu5G, and configure your environment.
+The script will:
+- Prompt you to choose GUI support (Qt6-based IDE) or command-line only installation
+- Install all required system dependencies automatically
+- Install Miniconda (if not present)
+- Download and build OMNeT++ 6.2.0
+- Build INET 4.5.4 and Simu5G 1.3.0
+- Configure your `~/.bashrc` for persistent environment setup
 
-For detailed installation instructions and manual installation steps, see [INSTALL.md](INSTALL.md).
+For detailed installation instructions and manual installation steps, see [docs/setup/INSTALL.md](docs/setup/INSTALL.md).
 
 ## Usage
 
@@ -85,18 +95,19 @@ To remove the installation:
 
 ## Troubleshooting
 
-For detailed troubleshooting steps, see [INSTALL.md](INSTALL.md).
+For detailed troubleshooting steps, see [docs/setup/INSTALL.md](docs/setup/INSTALL.md).
 
 Common issues:
-- **Commands not found**: Run `source ~/.bashrc` or restart your terminal
+- **Commands not found**: Restart your terminal or run `source ~/.bashrc`
 - **Build errors**: Ensure conda environment is active: `conda activate omnetpp`
-- **Missing configure.user**: Run `cp configure.user.dist configure.user` in omnetpp-6.2.0/
+- **Permission errors**: Ensure you have sudo privileges for system package installation
 
 ## Configuration Notes
 
-- OMNeT++ has been pre-configured for command-line first usage
-- Python bindings are disabled by default (can be enabled in `omnetpp-6.2.0/configure.user`)
-- All frameworks are set up for release mode builds
+- **GUI Support**: You can choose to install with or without Qt6-based IDE during installation
+- **Automatic Setup**: Miniconda and all dependencies are installed automatically
+- **Python Environment**: Uses Python 3.12 in a dedicated conda environment (`omnetpp`)
+- **Build Mode**: All frameworks are built in release mode by default
 
 ## Useful Commands
 

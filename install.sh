@@ -2,6 +2,7 @@
 
 # ==============================================================================
 # Installer: OMNeT++ 6.2.0, INET 4.5.4, Simu5G 1.3.0
+# For clean Ubuntu/Debian systems with automatic dependency installation
 # ==============================================================================
 
 set -e  # Exit immediately if a command exits with a non-zero status
@@ -10,6 +11,7 @@ set -e  # Exit immediately if a command exits with a non-zero status
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 RED='\033[0;31m'
+YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Get the absolute path of the project root
@@ -24,53 +26,35 @@ error() {
     exit 1
 }
 
+warn() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
 log "Starting installation in: $PROJECT_ROOT"
+log "This script will install system dependencies and Miniconda automatically."
 
 # ------------------------------------------------------------------------------
-# 1. Prerequisite Checks
+# 1. Check if running on Ubuntu/Debian
 # ------------------------------------------------------------------------------
-log "Checking prerequisites..."
-
-# Check if conda is available
-USE_CONDA="no"
-ENV_NAME="omnetpp"
-
-if command -v conda &> /dev/null; then
-    echo -e "${BLUE}[Installer]${NC} Conda is available on your system."
-    read -p "Do you want to use a Conda environment for this installation? (yes/no) [default: yes]: " CONDA_CHOICE
-    CONDA_CHOICE=${CONDA_CHOICE:-yes}
-    CONDA_CHOICE=$(echo "$CONDA_CHOICE" | tr '[:upper:]' '[:lower:]')
-    
-    if [[ "$CONDA_CHOICE" == "yes" || "$CONDA_CHOICE" == "y" ]]; then
-        USE_CONDA="yes"
-        # Initialize Conda for this script session
-        eval "$(conda shell.bash hook)"
-        log "Conda environment will be used."
-    else
-        log "Skipping Conda. Using system Python instead."
-    fi
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS=$ID
+    log "Detected OS: $OS"
 else
-    log "Conda is not installed. Using system Python instead."
-fi
-
-# Check for Python if not using conda
-if [[ "$USE_CONDA" == "no" ]]; then
-    if ! command -v python3 &> /dev/null; then
-        error "Python3 is not installed or not in your PATH. Please install Python 3.x first."
-    fi
-    log "Using system Python: $(python3 --version)"
+    warn "Cannot detect OS. Assuming Debian/Ubuntu-based system."
+    OS="unknown"
 fi
 
 # ------------------------------------------------------------------------------
 # 2. GUI Installation Option
 # ------------------------------------------------------------------------------
 echo -e "${BLUE}[Installer]${NC} Do you want to install OMNeT++ with GUI support (IDE)?"
-echo -e "  This requires Qt libraries and will enable the graphical IDE."
+echo -e "  This requires Qt6 libraries and will enable the graphical IDE."
 echo -e "  Choose 'no' for headless/command-line only installation."
-read -p "Install with GUI support? (yes/no) [default: no]: " GUI_CHOICE
+read -p "Install with GUI support? (yes/no) [default: yes]: " GUI_CHOICE
 
-# Default to 'no' if empty
-GUI_CHOICE=${GUI_CHOICE:-no}
+# Default to 'yes'
+GUI_CHOICE=${GUI_CHOICE:-yes}
 
 # Normalize input
 GUI_CHOICE=$(echo "$GUI_CHOICE" | tr '[:upper:]' '[:lower:]')
@@ -78,7 +62,7 @@ GUI_CHOICE=$(echo "$GUI_CHOICE" | tr '[:upper:]' '[:lower:]')
 if [[ "$GUI_CHOICE" == "yes" || "$GUI_CHOICE" == "y" ]]; then
     WITH_QTENV="yes"
     WITH_OSG="yes"
-    log "GUI support enabled. Qt libraries will be required."
+    log "GUI support enabled. Qt6 libraries will be installed."
 else
     WITH_QTENV="no"
     WITH_OSG="no"
@@ -86,60 +70,117 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 3. Environment Setup (Conda or System)
+# 3. Install System Dependencies
 # ------------------------------------------------------------------------------
-if [[ "$USE_CONDA" == "yes" ]]; then
-    if conda info --envs | grep -q "^$ENV_NAME "; then
-        log "Conda environment '$ENV_NAME' already exists. Activating..."
-        conda activate $ENV_NAME
-    else
-        log "Creating Conda environment '$ENV_NAME' with Python 3.12..."
-        conda create -n $ENV_NAME python=3.12 -y
-        conda activate $ENV_NAME
-    fi
+log "Installing system dependencies..."
 
-    log "Installing build dependencies via Conda..."
-    if [[ "$WITH_QTENV" == "yes" ]]; then
-        log "Installing Qt5 for GUI support..."
-        conda install -c conda-forge bison flex pyqt=5 python-devtools -y
-    else
-        conda install -c conda-forge bison flex python-devtools -y
+if [[ "$OS" == "ubuntu" ]] || [[ "$OS" == "debian" ]]; then
+    # Check if we have sudo privileges
+    if ! sudo -n true 2>/dev/null; then
+        warn "This script requires sudo privileges to install system packages."
+        warn "You may be prompted for your password."
     fi
+    
+    log "Updating package lists..."
+    sudo apt-get update
+    
+    # Base dependencies
+    BASE_DEPS="bison flex build-essential pkg-config wget git"
+    
+    # GUI dependencies
+    if [[ "$WITH_QTENV" == "yes" ]]; then
+        GUI_DEPS="qt6-base-dev qt6-base-dev-tools libopenscenegraph-dev"
+        ALL_DEPS="$BASE_DEPS $GUI_DEPS"
+    else
+        ALL_DEPS="$BASE_DEPS"
+    fi
+    
+    log "Installing packages: $ALL_DEPS"
+    sudo apt-get install -y $ALL_DEPS
+    
+    log "System dependencies installed successfully."
 else
-    log "Checking system build dependencies..."
-    # Check for required build tools
-    MISSING_DEPS=""
-    for cmd in bison flex; do
-        if ! command -v $cmd &> /dev/null; then
-            MISSING_DEPS="$MISSING_DEPS $cmd"
-        fi
-    done
-    
-    if [[ -n "$MISSING_DEPS" ]]; then
-        echo -e "${YELLOW}[WARNING]${NC} The following dependencies are missing:$MISSING_DEPS"
-        echo -e "Please install them using your system package manager."
-        echo -e "  For Debian/Ubuntu: ${BLUE}sudo apt install bison flex${NC}"
-        echo -e "  For Fedora/RHEL:   ${BLUE}sudo dnf install bison flex${NC}"
-        echo -e "  For Arch Linux:    ${BLUE}sudo pacman -S bison flex${NC}"
-        read -p "Continue anyway? (y/N): " CONTINUE_CHOICE
-        if [[ ! "$CONTINUE_CHOICE" =~ ^[Yy]$ ]]; then
-            error "Installation aborted. Please install missing dependencies first."
-        fi
-    else
-        log "All required build tools found."
-    fi
-    
+    warn "Unsupported OS: $OS"
+    warn "Please manually install: bison flex build-essential pkg-config wget git"
     if [[ "$WITH_QTENV" == "yes" ]]; then
-        echo -e "${YELLOW}[NOTE]${NC} For GUI support, you may need to install Qt5 development libraries:"
-        echo -e "  For Debian/Ubuntu: ${BLUE}sudo apt install qtbase5-dev qtchooser qt5-qmake qtbase5-dev-tools${NC}"
+        warn "For GUI support, also install: qt6-base-dev qt6-base-dev-tools libopenscenegraph-dev"
+    fi
+    read -p "Continue anyway? (y/N): " CONTINUE_CHOICE
+    if [[ ! "$CONTINUE_CHOICE" =~ ^[Yy]$ ]]; then
+        error "Installation aborted."
     fi
 fi
 
 # ------------------------------------------------------------------------------
-# 4. Download and Build OMNeT++ 6.2.0
+# 4. Install Miniconda
+# ------------------------------------------------------------------------------
+MINICONDA_DIR="$HOME/miniconda3"
+ENV_NAME="omnetpp"
+
+if [ -d "$MINICONDA_DIR" ] && [ -f "$MINICONDA_DIR/bin/conda" ]; then
+    log "Miniconda already installed at $MINICONDA_DIR"
+    # Initialize conda for this session
+    source "$MINICONDA_DIR/bin/activate"
+    eval "$(conda shell.bash hook)"
+else
+    log "Installing Miniconda..."
+    
+    mkdir -p "$MINICONDA_DIR"
+    MINICONDA_INSTALLER="$MINICONDA_DIR/miniconda.sh"
+    
+    log "Downloading Miniconda installer..."
+    wget -q --show-progress https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O "$MINICONDA_INSTALLER"
+    
+    log "Installing Miniconda (this may take a few minutes)..."
+    bash "$MINICONDA_INSTALLER" -b -u -p "$MINICONDA_DIR"
+    
+    log "Cleaning up installer..."
+    rm -f "$MINICONDA_INSTALLER"
+    
+    log "Initializing Conda..."
+    source "$MINICONDA_DIR/bin/activate"
+    conda init --all
+    
+    # Accept terms of service
+    log "Accepting Conda terms of service..."
+    conda config --set channel_priority flexible
+    yes | conda update --all || true
+    
+    log "Miniconda installed successfully."
+fi
+
+# Ensure conda is available in this session
+eval "$(conda shell.bash hook)"
+
+# ------------------------------------------------------------------------------
+# 5. Create and Configure Conda Environment
+# ------------------------------------------------------------------------------
+log "Setting up Conda environment '$ENV_NAME'..."
+
+if conda info --envs | grep -q "^$ENV_NAME "; then
+    log "Conda environment '$ENV_NAME' already exists. Activating..."
+    conda activate $ENV_NAME
+else
+    log "Creating Conda environment '$ENV_NAME' with Python 3.12..."
+    conda create -n $ENV_NAME python=3.12 -y
+    conda activate $ENV_NAME
+fi
+
+log "Installing build dependencies via Conda..."
+if [[ "$WITH_QTENV" == "yes" ]]; then
+    log "Installing Qt5 support for Conda environment..."
+    conda install -c conda-forge bison flex pyqt=5 -y
+else
+    conda install -c conda-forge bison flex -y
+fi
+
+log "Conda environment configured successfully."
+
+# ------------------------------------------------------------------------------
+# 6. Download and Build OMNeT++ 6.2.0
 # ------------------------------------------------------------------------------
 OMNETPP_VERSION="6.2.0"
-OMNETPP_DIR="$PROJECT_ROOT/omnetpp-6.2.0"
+OMNETPP_DIR="$PROJECT_ROOT/omnetpp-${OMNETPP_VERSION}"
 OMNETPP_TGZ="omnetpp-${OMNETPP_VERSION}-linux-x86_64.tgz"
 OMNETPP_URL="https://github.com/omnetpp/omnetpp/releases/download/omnetpp-${OMNETPP_VERSION}/${OMNETPP_TGZ}"
 
@@ -148,7 +189,8 @@ if [ ! -d "$OMNETPP_DIR" ]; then
     cd "$PROJECT_ROOT"
     
     if [ ! -f "$OMNETPP_TGZ" ]; then
-        wget "$OMNETPP_URL" || error "Failed to download OMNeT++"
+        log "Downloading OMNeT++ ${OMNETPP_VERSION}..."
+        wget --show-progress "$OMNETPP_URL" || error "Failed to download OMNeT++"
     fi
     
     log "Extracting OMNeT++..."
@@ -160,43 +202,49 @@ else
     log "OMNeT++ ${OMNETPP_VERSION} directory already exists."
 fi
 
-log "Building OMNeT++ ${OMNETPP_VERSION}..."
+log "Configuring and building OMNeT++ ${OMNETPP_VERSION}..."
 cd "$OMNETPP_DIR"
 
-# Copy configure.user.dist to configure.user if it doesn't exist
-if [ ! -f "configure.user" ]; then
-    log "Generating configure.user with selected options..."
-    cp configure.user.dist configure.user
-fi
-
-# Modify configure.user based on GUI choice
-sed -i "s/^WITH_QTENV=.*/WITH_QTENV=$WITH_QTENV/" configure.user
-sed -i "s/^WITH_OSG=.*/WITH_OSG=$WITH_OSG/" configure.user
+# Create configure.user with appropriate settings
+log "Generating configure.user with selected options..."
+cat > configure.user << EOF
+# Generated by install.sh
+WITH_QTENV=$WITH_QTENV
+WITH_OSG=$WITH_OSG
+EOF
 
 log "Configuration: WITH_QTENV=$WITH_QTENV, WITH_OSG=$WITH_OSG"
 
 # Source setenv to set up PATH and libraries for the build process
 source setenv
 
-# Install Python requirements for OMNeT++ AFTER sourcing setenv
-# This ensures packages are installed for the Python that configure will find
+# Install Python requirements for OMNeT++
 log "Installing Python requirements for OMNeT++..."
-python3 -m pip install --upgrade -r "$OMNETPP_DIR/python/requirements.txt"
+if [ -f "$OMNETPP_DIR/python/requirements.txt" ]; then
+    python3 -m pip install --upgrade pip
+    python3 -m pip install --upgrade -r "$OMNETPP_DIR/python/requirements.txt"
+else
+    warn "Python requirements.txt not found, skipping Python package installation."
+fi
 
-# If using conda, ensure conda's lib directory is in the library path for Python embedding support
-# This is needed because conda's python3-config assumes libpython is in a standard path
-# LIBRARY_PATH is used at link time, LD_LIBRARY_PATH at runtime
-if [[ "$USE_CONDA" == "yes" && -n "$CONDA_PREFIX" ]]; then
-    export LIBRARY_PATH="$CONDA_PREFIX/lib:$LIBRARY_PATH"
-    export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
+# Set library paths for Conda
+if [[ -n "$CONDA_PREFIX" ]]; then
+    export LIBRARY_PATH="$CONDA_PREFIX/lib:${LIBRARY_PATH:-}"
+    export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+    log "Configured library paths for Conda environment."
 fi
 
 # Configure and Build
+log "Running ./configure (this may take a few minutes)..."
 ./configure
+
+log "Building OMNeT++ with $(nproc) parallel jobs..."
 make -j$(nproc)
 
+log "OMNeT++ built successfully."
+
 # ------------------------------------------------------------------------------
-# 5. Build INET 4.5
+# 7. Build INET 4.5
 # ------------------------------------------------------------------------------
 log "Building INET 4.5..."
 
@@ -205,15 +253,25 @@ if [ ! -d "$PROJECT_ROOT/inet4.5" ]; then
 fi
 
 cd "$PROJECT_ROOT/inet4.5"
-# Re-source OMNeT++ setenv just in case
-source setenv
+
+# Ensure OMNeT++ environment is set
 source "$OMNETPP_DIR/setenv"
 
+# Check if INET has its own setenv
+if [ -f "setenv" ]; then
+    source setenv
+fi
+
+log "Generating makefiles for INET..."
 make makefiles
+
+log "Building INET in release mode..."
 make MODE=release -j$(nproc)
 
+log "INET built successfully."
+
 # ------------------------------------------------------------------------------
-# 6. Build Simu5G 1.3.0
+# 8. Build Simu5G 1.3.0
 # ------------------------------------------------------------------------------
 log "Building Simu5G 1.3.0..."
 
@@ -222,18 +280,25 @@ if [ ! -d "$PROJECT_ROOT/simu5g-1.3.0" ]; then
 fi
 
 cd "$PROJECT_ROOT/simu5g-1.3.0"
+
+# Ensure OMNeT++ environment is set
 source "$OMNETPP_DIR/setenv"
 
+log "Generating makefiles for Simu5G..."
 make makefiles
+
+log "Building Simu5G in release mode..."
 make MODE=release -j$(nproc)
 
+log "Simu5G built successfully."
+
 # ------------------------------------------------------------------------------
-# 7. Final Configuration (Persistence)
+# 9. Final Configuration (Persistence)
 # ------------------------------------------------------------------------------
 log "Configuring ~/.bashrc for persistence..."
 
 BASHRC="$HOME/.bashrc"
-MARKER="# Omnet++ Environment Variables"
+MARKER="# OMNeT++ Environment Variables"
 
 # Helper function to append safely
 append_if_missing() {
@@ -241,37 +306,69 @@ append_if_missing() {
 }
 
 # Add a header comment if not present
-grep -qF "$MARKER" "$BASHRC" || echo -e "\n$MARKER" >> "$BASHRC"
+if ! grep -qF "$MARKER" "$BASHRC"; then
+    echo -e "\n$MARKER" >> "$BASHRC"
+fi
 
-# Add source commands using the absolute PROJECT_ROOT
+# Add Conda initialization if not present
+if ! grep -q "conda initialize" "$BASHRC"; then
+    log "Adding Conda initialization to ~/.bashrc..."
+    cat >> "$BASHRC" << 'EOF'
+
+# >>> conda initialize >>>
+# !! Contents within this block are managed by 'conda init' !!
+__conda_setup="$('$HOME/miniconda3/bin/conda' 'shell.bash' 'hook' 2> /dev/null)"
+if [ $? -eq 0 ]; then
+    eval "$__conda_setup"
+else
+    if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+        . "$HOME/miniconda3/etc/profile.d/conda.sh"
+    else
+        export PATH="$HOME/miniconda3/bin:$PATH"
+    fi
+fi
+unset __conda_setup
+# <<< conda initialize <<<
+EOF
+fi
+
+# Add OMNeT++ environment sourcing
+append_if_missing "# Source OMNeT++ environment"
 append_if_missing "source $OMNETPP_DIR/setenv > /dev/null 2>&1"
+
+# Add INET environment sourcing
+append_if_missing "# Source INET environment"
 append_if_missing "source $PROJECT_ROOT/inet4.5/setenv > /dev/null 2>&1"
 
-# Simu5G setenv requires being sourced from its directory (uses relative paths)
+# Add Simu5G environment sourcing (needs pushd/popd due to relative paths)
+append_if_missing "# Source Simu5G environment"
 append_if_missing "pushd $PROJECT_ROOT/simu5g-1.3.0 > /dev/null 2>&1"
 append_if_missing "source setenv > /dev/null 2>&1"
 append_if_missing "popd > /dev/null 2>&1"
 
+log "Environment configuration added to ~/.bashrc"
+
 # ------------------------------------------------------------------------------
-# 8. Completion
+# 10. Completion
 # ------------------------------------------------------------------------------
 echo -e "\n${GREEN}============================================================${NC}"
 echo -e "${GREEN}Installation Complete!${NC}"
 echo -e "${GREEN}============================================================${NC}"
-echo -e "Configuration: GUI Support = $WITH_QTENV, Conda Environment = $USE_CONDA"
-echo -e "\nNext steps:"
-echo -e "1. Apply environment changes: ${BLUE}source ~/.bashrc${NC}"
-if [[ "$USE_CONDA" == "yes" ]]; then
-    echo -e "2. Activate the conda environment: ${BLUE}conda activate $ENV_NAME${NC}"
-    STEP_NUM=3
-else
-    echo -e "   (No conda environment was created)"
-    STEP_NUM=2
-fi
+echo -e "Configuration:"
+echo -e "  - GUI Support: $WITH_QTENV"
+echo -e "  - Conda Environment: $ENV_NAME"
+echo -e "  - OMNeT++ Location: $OMNETPP_DIR"
+echo -e "\n${BLUE}Next steps:${NC}"
+echo -e "1. ${GREEN}Restart your terminal${NC} or run: ${BLUE}source ~/.bashrc${NC}"
+echo -e "2. Activate the conda environment: ${BLUE}conda activate $ENV_NAME${NC}"
+
 if [[ "$WITH_QTENV" == "yes" ]]; then
-    echo -e "$STEP_NUM. To launch the IDE, run: ${BLUE}omnetpp${NC}"
-    echo -e "$((STEP_NUM+1)). To test CLI, run: ${BLUE}cd simu5g-1.3.0 && . setenv && which simu5g${NC}"
+    echo -e "3. To launch the OMNeT++ IDE: ${BLUE}omnetpp${NC}"
+    echo -e "4. To test CLI: ${BLUE}cd $PROJECT_ROOT/simu5g-1.3.0 && . setenv && which simu5g${NC}"
 else
-    echo -e "$STEP_NUM. To test, run: ${BLUE}cd simu5g-1.3.0 && . setenv && which simu5g${NC}"
-    echo -e "\nNote: GUI/IDE not installed. Use command-line tools (opp_run, etc.)"
+    echo -e "3. To test: ${BLUE}cd $PROJECT_ROOT/simu5g-1.3.0 && . setenv && which simu5g${NC}"
+    echo -e "\n${YELLOW}Note:${NC} GUI/IDE not installed. Use command-line tools (opp_run, etc.)"
 fi
+
+echo -e "\n${GREEN}All dependencies, Miniconda, and software have been installed successfully!${NC}"
+echo -e "${BLUE}============================================================${NC}"

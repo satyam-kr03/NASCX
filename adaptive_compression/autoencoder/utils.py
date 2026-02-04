@@ -27,15 +27,23 @@ def save_results(results: List[Dict[str, Any]], output_file: Path) -> None:
     """
     df = pd.DataFrame(results)
     df = df.sort_values(['frame', 'keep_ratio'], ascending=[True, False])
-    df.to_csv(output_file, index=False)
+    
+    # Map keep_ratio to "components" (1-16) for simu5g compatibility
+    keep_ratios = sorted(df['keep_ratio'].unique())
+    keep_ratio_to_level = {ratio: level for level, ratio in enumerate(keep_ratios, start=1)}
+    df['components'] = df['keep_ratio'].map(keep_ratio_to_level)
+    
+    # Match PCA format exactly: frame, components, mse, size_bytes
+    df_output = df[['frame', 'components', 'mse', 'size_bytes']]
+    df_output.to_csv(output_file, index=False)
     logging.info(f"Results saved to {output_file}")
 
     # Print summary
     logging.info("\nFirst few rows:")
-    logging.info(df.head(20).to_string())
+    logging.info(df_output.head(20).to_string())
 
-    logging.info("\nSummary statistics by keep ratio:")
-    summary = df.groupby('keep_ratio').agg({
+    logging.info("\nSummary statistics by components:")
+    summary = df.groupby('components').agg({
         'mse': ['mean', 'std'],
         'size_bytes': 'first'
     }).round(6)
@@ -51,15 +59,21 @@ def plot_results(results: List[Dict[str, Any]], output_file: Path) -> None:
         output_file: Path to save plot image
     """
     df = pd.DataFrame(results)
+    
+    # Map keep_ratio to "components" (1-16) for simu5g compatibility
     keep_ratios = sorted(df['keep_ratio'].unique())
+    keep_ratio_to_level = {ratio: level for level, ratio in enumerate(keep_ratios, start=1)}
+    df['components'] = df['keep_ratio'].map(keep_ratio_to_level)
+    
+    components = sorted(df['components'].unique())
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     # Plot 1: MSE by frame
-    for keep_ratio in keep_ratios:
-        data = df[df['keep_ratio'] == keep_ratio]
+    for comp in components:
+        data = df[df['components'] == comp]
         axes[0].plot(data['frame'], data['mse'],
-                    label=f'keep={keep_ratio:.2f}',
+                    label=f'comp={comp}',
                     marker='o', alpha=0.6, markersize=3)
 
     axes[0].set_xlabel('Frame')
@@ -70,8 +84,8 @@ def plot_results(results: List[Dict[str, Any]], output_file: Path) -> None:
     axes[0].set_yscale('log')
 
     # Plot 2: Rate-Distortion curve
-    avg_mse = df.groupby('keep_ratio')['mse'].mean()
-    avg_size = df.groupby('keep_ratio')['size_bytes'].first()
+    avg_mse = df.groupby('components')['mse'].mean()
+    avg_size = df.groupby('components')['size_bytes'].first()
 
     # Sort by size for proper curve
     sort_idx = avg_size.argsort()
@@ -80,8 +94,8 @@ def plot_results(results: List[Dict[str, Any]], output_file: Path) -> None:
 
     axes[1].plot(avg_size_sorted, avg_mse_sorted, marker='o', markersize=10, linewidth=2)
     for i in range(len(avg_size_sorted)):
-        keep_r = avg_size_sorted.index[i]
-        axes[1].annotate(f'{keep_r:.2f}',
+        comp = avg_size_sorted.index[i]
+        axes[1].annotate(f'{comp}',
                          (avg_size_sorted.iloc[i], avg_mse_sorted.iloc[i]),
                          textcoords="offset points",
                          xytext=(0,10),

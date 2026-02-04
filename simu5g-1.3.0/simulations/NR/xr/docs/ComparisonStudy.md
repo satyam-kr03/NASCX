@@ -8,7 +8,11 @@
 This study compares two compression selection strategies for XR traffic in 5G NR networks:
 
 1. **Random Selection** — Baseline approach that randomly assigns compression levels (5-80) to each user
-2. **ML-Guided Selection** — Uses a trained XGBoost model to predict optimal compression based on **actual per-user CQI values** collected from a warmup simulation
+2. **ML-Guided Selection** — Uses a trained XGBoost model to predict optimal compression based on:
+   - **Number of users** in the cell
+   - **Actual per-user CQI values** collected from a warmup simulation
+   - **Frame rate (FPS)** — 60, 72, 90, or 120 fps
+   - **Traffic profile characteristics** — mean and standard deviation of frame sizes in KB
 
 ## Methodology
 
@@ -17,14 +21,16 @@ This study compares two compression selection strategies for XR traffic in 5G NR
 Unlike previous studies that used fixed CQI values (14.5), this study uses **actual CQI values from simu5g**:
 
 1. **Phase 1 (Warmup)**: Run a 50-frame simulation with random compression to collect real per-user CQI values
-2. **Phase 2 (Evaluation)**: Query ML model per-user with their actual CQI, then run full simulation
+2. **Phase 2 (Evaluation)**: Query ML model per-user with their actual CQI, FPS, and traffic profile features, then run full simulation
 
 ### Setup
 
 - **Simulation Framework**: Simu5G (OMNeT++)
 - **User Range**: 2-10 concurrent XR users
 - **Compression Levels**: 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80
-- **ML Model**: XGBoost regressor with coarser CQI bins (0.5 width) and sample weighting
+- **FPS Rates**: 60, 72, 90, 120 fps (randomly assigned per user)
+- **Traffic Profiles**: 5 profiles with varying mean frame sizes (45KB, 65KB, 80KB, 95KB, 120KB)
+- **ML Model**: XGBoost regressor with 5 features, coarser CQI bins (0.5 width) and sample weighting
 - **Model Server**: FastAPI endpoint at `localhost:8000`
 
 ### Procedure

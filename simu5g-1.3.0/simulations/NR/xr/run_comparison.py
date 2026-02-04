@@ -33,11 +33,22 @@ import multiprocessing
 
 # Configuration
 COMPRESSION_LEVELS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80]
+FPS_RATES = [60, 72, 90, 120]  # Supported frame rates
 USER_RANGE = range(2, 11)  # 2 to 10 users
 DEFAULT_RUNS = 10
 SIMULATION_DIR = Path(__file__).parent
 PCA_FILE = SIMULATION_DIR / "pca_sweep_summary_scaled.csv"
 MODEL_SERVER_URL = "http://localhost:8000"
+SIMULATION_TIME = 20  # seconds
+
+# Traffic profile configuration (matching generate_dataset.py)
+TRAFFIC_PROFILES = [
+    {"file": "traffic_45kb.csv", "mean_kb": 45.0, "std_kb": 24.1, "min_kb": 5.8, "max_kb": 84.2},
+    {"file": "traffic_65kb.csv", "mean_kb": 65.0, "std_kb": 34.8, "min_kb": 8.3, "max_kb": 121.7},
+    {"file": "traffic_80kb.csv", "mean_kb": 80.0, "std_kb": 42.9, "min_kb": 10.2, "max_kb": 149.8},
+    {"file": "traffic_95kb.csv", "mean_kb": 95.0, "std_kb": 50.9, "min_kb": 12.2, "max_kb": 177.8},
+    {"file": "traffic_120kb.csv", "mean_kb": 120.0, "std_kb": 64.3, "min_kb": 15.3, "max_kb": 224.7},
+]
 
 # Output files
 RESULTS_DIR = SIMULATION_DIR / "comparison_results"
@@ -83,11 +94,16 @@ def setup_simu5g_env():
 setup_simu5g_env()
 
 
-def load_pca_data() -> Dict[int, List[Dict]]:
-    """Load PCA sweep data grouped by compression level."""
-    data_by_level = {level: [] for level in COMPRESSION_LEVELS}
+def load_pca_data(traffic_file: Path = None) -> Dict[int, List[Dict]]:
+    """Load PCA sweep data grouped by compression level.
     
-    with open(PCA_FILE, 'r') as f:
+    Args:
+        traffic_file: Path to traffic profile CSV. If None, uses default PCA_FILE.
+    """
+    data_by_level = {level: [] for level in COMPRESSION_LEVELS}
+    pca_file = traffic_file if traffic_file else PCA_FILE
+    
+    with open(pca_file, 'r') as f:
         reader = csv.DictReader(f)
         for row in reader:
             components = int(row['components'])
@@ -119,12 +135,31 @@ def create_user_pca_file(user_id: int, compression_level: int,
     return output_file
 
 
-def query_model_server(num_users: int, avg_cqi: float = 14.5) -> int:
-    """Query the FastAPI model server for optimal compression level."""
+def query_model_server(num_users: int, avg_cqi: float = 14.5, 
+                       fps: int = 60, size_mean_kb: float = 65.0, 
+                       size_std_kb: float = 34.8) -> int:
+    """Query the FastAPI model server for optimal compression level.
+    
+    Args:
+        num_users: Number of users in the cell
+        avg_cqi: Average Channel Quality Indicator
+        fps: Frame rate (60, 72, 90, 120)
+        size_mean_kb: Mean frame size in KB
+        size_std_kb: Standard deviation of frame size in KB
+    
+    Returns:
+        Optimal compression level (5, 10, 15, ..., 80)
+    """
     try:
         response = requests.post(
             f"{MODEL_SERVER_URL}/predict",
-            json={"num_users": num_users, "avg_cqi": avg_cqi},
+            json={
+                "num_users": num_users, 
+                "avg_cqi": avg_cqi,
+                "fps": fps,
+                "size_mean_kb": size_mean_kb,
+                "size_std_kb": size_std_kb
+            },
             timeout=5000
         )
         if response.status_code == 200:
@@ -137,11 +172,14 @@ def query_model_server(num_users: int, avg_cqi: float = 14.5) -> int:
         return random.choice(COMPRESSION_LEVELS)  # Fallback to random
 
 
-def run_cqi_warmup(num_users: int, warmup_frames: int = 50, seed: int = 42) -> Dict[int, float]:
+def run_cqi_warmup(num_users: int, fps_rates: List[int], traffic_profiles: List[Dict],
+                   warmup_frames: int = 50, seed: int = 42) -> Dict[int, float]:
     """Run a short warmup simulation to collect actual CQI values for each user.
     
     Args:
         num_users: Number of users in the cell
+        fps_rates: List of FPS values per user
+        traffic_profiles: List of traffic profile dicts per user
         warmup_frames: Number of frames to run for warmup (default 50)
         seed: Random seed for compression selection
         
@@ -154,15 +192,14 @@ def run_cqi_warmup(num_users: int, warmup_frames: int = 50, seed: int = 42) -> D
     run_dir = SIMULATION_DIR / f"warmup_{num_users}_{seed}"
     run_dir.mkdir(exist_ok=True)
     
-    # Load PCA data
-    data_by_level = load_pca_data()
-    
     # Use random compression for warmup
     compression_levels = [random.choice(COMPRESSION_LEVELS) for _ in range(num_users)]
     
-    # Generate per-user PCA files
+    # Generate per-user PCA files using their traffic profiles
     user_files = []
     for i, comp_level in enumerate(compression_levels):
+        traffic_file = SIMULATION_DIR / traffic_profiles[i]['file']
+        data_by_level = load_pca_data(traffic_file)
         user_file = create_user_pca_file(i, comp_level, data_by_level, run_dir)
         user_files.append(user_file)
     
@@ -176,12 +213,14 @@ def run_cqi_warmup(num_users: int, warmup_frames: int = 50, seed: int = 42) -> D
         f"--*.numUe={num_users}",
         f"--*.server.numApps={num_users}",
         f"--*.ue[*].app[0].deadlineMs=5ms",
-        f"--*.ue[*].app[0].expectedFrames={warmup_frames}",
     ]
     
-    # Add per-user PCA file paths
+    # Add per-user PCA file paths, FPS, and expected frames
     for i, user_file in enumerate(user_files):
+        fps = fps_rates[i]
         cmd.append(f'--*.server.app[{i}].pcaFile="{user_file}"')
+        cmd.append(f'--*.server.app[{i}].fps={fps}')
+        cmd.append(f'--*.ue[{i}].app[0].expectedFrames={warmup_frames}')
     
     cmd.append("omnetpp.ini")
     
@@ -232,7 +271,8 @@ def run_cqi_warmup(num_users: int, warmup_frames: int = 50, seed: int = 42) -> D
     return user_cqis
 
 
-def get_compression_levels(mode: str, num_users: int, seed: int, 
+def get_compression_levels(mode: str, num_users: int, seed: int,
+                           fps_rates: List[int], traffic_profiles: List[Dict],
                            user_cqis: Optional[Dict[int, float]] = None) -> List[int]:
     """Get compression levels based on selection mode.
     
@@ -240,6 +280,8 @@ def get_compression_levels(mode: str, num_users: int, seed: int,
         mode: 'random' or 'ml'
         num_users: Number of users
         seed: Random seed
+        fps_rates: List of FPS values per user
+        traffic_profiles: List of traffic profile dicts per user
         user_cqis: Optional dict of per-user CQI values (for ML mode with actual CQI)
     """
     random.seed(seed)
@@ -248,7 +290,7 @@ def get_compression_levels(mode: str, num_users: int, seed: int,
         # Random selection for each user
         return [random.choice(COMPRESSION_LEVELS) for _ in range(num_users)]
     elif mode == "ml":
-        # ML-guided: per-user compression based on their actual CQI
+        # ML-guided: per-user compression based on their actual CQI, FPS, and traffic profile
         compressions = []
         for user_id in range(num_users):
             if user_cqis and user_id in user_cqis:
@@ -256,7 +298,16 @@ def get_compression_levels(mode: str, num_users: int, seed: int,
             else:
                 cqi = 14.0  # Default fallback
             
-            optimal = query_model_server(num_users, avg_cqi=cqi)
+            fps = fps_rates[user_id]
+            profile = traffic_profiles[user_id]
+            
+            optimal = query_model_server(
+                num_users=num_users, 
+                avg_cqi=cqi,
+                fps=fps,
+                size_mean_kb=profile['mean_kb'],
+                size_std_kb=profile['std_kb']
+            )
             compressions.append(optimal)
         
         return compressions
@@ -264,20 +315,29 @@ def get_compression_levels(mode: str, num_users: int, seed: int,
         raise ValueError(f"Unknown mode: {mode}")
 
 
-def run_simulation(num_users: int, compression_levels: List[int], 
+def run_simulation(num_users: int, compression_levels: List[int],
+                   fps_rates: List[int], traffic_profiles: List[Dict], 
                    run_id: int, mode: str) -> Optional[Dict]:
-    """Run a single simulation and return results."""
+    """Run a single simulation and return results.
+    
+    Args:
+        num_users: Number of users
+        compression_levels: List of compression levels per user
+        fps_rates: List of FPS values per user
+        traffic_profiles: List of traffic profile dicts per user
+        run_id: Run identifier
+        mode: 'random' or 'ml'
+    """
     
     # Create temporary directory for this run
     run_dir = SIMULATION_DIR / f"run_{mode}_{run_id}"
     run_dir.mkdir(exist_ok=True)
     
-    # Load PCA data
-    data_by_level = load_pca_data()
-    
-    # Generate per-user PCA files
+    # Generate per-user PCA files using their traffic profiles
     user_files = []
     for i, comp_level in enumerate(compression_levels[:num_users]):
+        traffic_file = SIMULATION_DIR / traffic_profiles[i]['file']
+        data_by_level = load_pca_data(traffic_file)
         user_file = create_user_pca_file(i, comp_level, data_by_level, run_dir)
         user_files.append(user_file)
     
@@ -293,9 +353,13 @@ def run_simulation(num_users: int, compression_levels: List[int],
         f"--*.ue[*].app[0].deadlineMs=5ms",
     ]
     
-    # Add per-user PCA file paths
+    # Add per-user PCA file paths, FPS, and expected frames
     for i, user_file in enumerate(user_files):
+        fps = fps_rates[i]
+        expected_frames = fps * SIMULATION_TIME
         cmd.append(f'--*.server.app[{i}].pcaFile="{user_file}"')
+        cmd.append(f'--*.server.app[{i}].fps={fps}')
+        cmd.append(f'--*.ue[{i}].app[0].expectedFrames={expected_frames}')
     
     cmd.append("omnetpp.ini")
     
@@ -311,13 +375,16 @@ def run_simulation(num_users: int, compression_levels: List[int],
         )
         
         output = result.stdout + result.stderr
-        user_results = parse_simulation_output(output, num_users, compression_levels)
+        user_results = parse_simulation_output(output, num_users, compression_levels,
+                                               fps_rates, traffic_profiles)
         
         return {
             'run_id': run_id,
             'mode': mode,
             'num_users': num_users,
             'compression_levels': compression_levels[:num_users],
+            'fps_rates': fps_rates[:num_users],
+            'traffic_profiles': [p['file'] for p in traffic_profiles[:num_users]],
             'user_results': user_results,
             'success': result.returncode == 0
         }
@@ -339,7 +406,9 @@ def run_simulation(num_users: int, compression_levels: List[int],
 
 
 def parse_simulation_output(output: str, num_users: int, 
-                           compression_levels: List[int]) -> List[Dict]:
+                           compression_levels: List[int],
+                           fps_rates: List[int] = None,
+                           traffic_profiles: List[Dict] = None) -> List[Dict]:
     """Parse simulation output to extract per-user metrics."""
     user_results = []
     
@@ -370,6 +439,8 @@ def parse_simulation_output(output: str, num_users: int,
         avg_cqi = float(match.group(7))
         
         comp_level = compression_levels[user_id] if user_id < len(compression_levels) else 0
+        fps = fps_rates[user_id] if fps_rates and user_id < len(fps_rates) else 60
+        profile = traffic_profiles[user_id] if traffic_profiles and user_id < len(traffic_profiles) else TRAFFIC_PROFILES[0]
         
         avg_mse = 0.0
         for mse_match in mse_pattern.finditer(output):
@@ -380,6 +451,9 @@ def parse_simulation_output(output: str, num_users: int,
         user_results.append({
             'user_id': user_id,
             'compression_level': comp_level,
+            'fps': fps,
+            'size_mean_kb': profile['mean_kb'],
+            'size_std_kb': profile['std_kb'],
             'total_frames': total_frames,
             'on_time_frames': on_time_frames,
             'avg_delay_ms': avg_delay,
@@ -402,15 +476,21 @@ def run_single_task(task: Dict) -> Optional[Dict]:
     num_users = task['num_users']
     run_id = task['run_id']
     run_seed = task['run_seed']
+    fps_rates = task['fps_rates']
+    traffic_profiles = task['traffic_profiles']
     
     # For ML mode, run CQI warmup first
     user_cqis = None
     if mode == "ml":
         print(f"  Running CQI warmup for {num_users} users...")
-        user_cqis = run_cqi_warmup(num_users, warmup_frames=50, seed=run_seed)
+        user_cqis = run_cqi_warmup(num_users, fps_rates, traffic_profiles, 
+                                   warmup_frames=50, seed=run_seed)
     
-    compression_levels = get_compression_levels(mode, num_users, run_seed, user_cqis=user_cqis)
-    result = run_simulation(num_users, compression_levels, run_id, mode)
+    compression_levels = get_compression_levels(mode, num_users, run_seed, 
+                                                fps_rates, traffic_profiles, 
+                                                user_cqis=user_cqis)
+    result = run_simulation(num_users, compression_levels, fps_rates, traffic_profiles,
+                           run_id, mode)
     
     if result and result.get('success') and result.get('user_results'):
         rows = []
@@ -452,12 +532,20 @@ def run_comparison_study(num_runs: int = DEFAULT_RUNS, seed: int = 42):
             for run_idx in range(num_runs):
                 run_id += 1
                 run_seed = seed + run_id + (1000 if mode == "ml" else 0)
+                random.seed(run_seed)
+                
+                # Assign FPS and traffic profiles per user (same for both modes)
+                fps_rates = [random.choice(FPS_RATES) for _ in range(num_users)]
+                traffic_profiles = [random.choice(TRAFFIC_PROFILES) for _ in range(num_users)]
+                
                 tasks.append({
                     'mode': mode,
                     'num_users': num_users,
                     'run_id': run_id,
                     'run_idx': run_idx,
-                    'run_seed': run_seed
+                    'run_seed': run_seed,
+                    'fps_rates': fps_rates,
+                    'traffic_profiles': traffic_profiles
                 })
     
     total_tasks = len(tasks)
@@ -493,6 +581,7 @@ def run_comparison_study(num_runs: int = DEFAULT_RUNS, seed: int = 42):
     if all_results:
         output_file = RESULTS_DIR / f"comparison_{timestamp}.csv"
         fieldnames = ['mode', 'run_id', 'num_users', 'user_id', 'compression_level',
+                      'fps', 'size_mean_kb', 'size_std_kb',
                       'total_frames', 'on_time_frames', 'avg_delay_ms',
                       'delay_reliability', 'user_satisfied', 'avg_mse', 'avg_cqi']
         
@@ -577,32 +666,50 @@ def quick_test():
         print(f"Model server not available: {e}")
     
     num_users = 4
+    random.seed(42)
+    
+    # Assign FPS and traffic profiles for test
+    fps_rates = [random.choice(FPS_RATES) for _ in range(num_users)]
+    traffic_profiles = [random.choice(TRAFFIC_PROFILES) for _ in range(num_users)]
+    
+    print(f"\nTest configuration for {num_users} users:")
+    for i in range(num_users):
+        print(f"  User {i}: fps={fps_rates[i]}, traffic={traffic_profiles[i]['file']}")
     
     # Test random mode
-    print(f"\nTesting random mode with {num_users} users...")
-    compression_levels = get_compression_levels("random", num_users, seed=42)
+    print(f"\nTesting random mode...")
+    compression_levels = get_compression_levels("random", num_users, seed=42, 
+                                                fps_rates=fps_rates, 
+                                                traffic_profiles=traffic_profiles)
     print(f"  Compression levels: {compression_levels}")
     
-    result = run_simulation(num_users, compression_levels, run_id=999, mode="random")
+    result = run_simulation(num_users, compression_levels, fps_rates, traffic_profiles,
+                           run_id=999, mode="random")
     if result and result.get('success'):
         print(f"  Success! {len(result.get('user_results', []))} user results")
     else:
         print("  Failed!")
     
     # Test ML mode with CQI warmup
-    print(f"\nTesting ML mode with CQI warmup ({num_users} users)...")
+    print(f"\nTesting ML mode with CQI warmup...")
     print("  Running warmup to collect actual CQI values...")
-    user_cqis = run_cqi_warmup(num_users, warmup_frames=30, seed=42)
+    user_cqis = run_cqi_warmup(num_users, fps_rates, traffic_profiles, 
+                               warmup_frames=30, seed=42)
     print(f"  User CQIs: {user_cqis}")
     
-    compression_levels = get_compression_levels("ml", num_users, seed=42, user_cqis=user_cqis)
+    compression_levels = get_compression_levels("ml", num_users, seed=42, 
+                                                fps_rates=fps_rates, 
+                                                traffic_profiles=traffic_profiles,
+                                                user_cqis=user_cqis)
     print(f"  ML Compression levels: {compression_levels}")
     
-    result = run_simulation(num_users, compression_levels, run_id=998, mode="ml")
+    result = run_simulation(num_users, compression_levels, fps_rates, traffic_profiles,
+                           run_id=998, mode="ml")
     if result and result.get('success'):
         print(f"  Success! {len(result.get('user_results', []))} user results")
         for ur in result.get('user_results', []):
-            print(f"    User {ur['user_id']}: CQI={ur['avg_cqi']:.2f}, Comp={ur['compression_level']}")
+            print(f"    User {ur['user_id']}: CQI={ur['avg_cqi']:.2f}, FPS={ur.get('fps', 60)}, "
+                  f"Comp={ur['compression_level']}")
     else:
         print("  Failed!")
 

@@ -5,6 +5,8 @@ Dataset Generation for Optimal Compression Selection
 This script runs batch Simu5G simulations with varying:
 - Number of users (2-10)
 - Random compression levels per user (5, 10, 15, ..., 80)
+- FPS rates per user (60, 72, 90, 120)
+- Traffic profiles per user (varying frame size distributions)
 
 The generated dataset captures the relationship between network conditions
 and compression outcomes for training an ML model.
@@ -28,19 +30,30 @@ import shutil
 
 # Configuration
 COMPRESSION_LEVELS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80]
-USER_RANGE = range(5, 11)  # 5 to 10 users
+FPS_RATES = [60, 72, 90, 120]
+USER_RANGE = range(2, 11)  # 2 to 10 users
 DEFAULT_RUNS_PER_CONFIG = 10
 DEFAULT_NUM_WORKERS = min(16, cpu_count())  # Default to 16 or available cores
 SIMULATION_DIR = Path(__file__).parent
-PCA_SWEEP_FILE = SIMULATION_DIR / "pca_sweep_summary_scaled.csv"
+SIMULATION_TIME = 20  # seconds
 DATASET_OUTPUT = SIMULATION_DIR / "compression_dataset.csv"
 
+# Traffic profile configuration
+# Each entry: (filename, mean_kb, std_kb, min_kb, max_kb)
+TRAFFIC_PROFILES = [
+    {"file": "traffic_45kb.csv", "mean_kb": 45.0, "std_kb": 24.1, "min_kb": 5.8, "max_kb": 84.2},
+    {"file": "traffic_65kb.csv", "mean_kb": 65.0, "std_kb": 34.8, "min_kb": 8.3, "max_kb": 121.7},
+    {"file": "traffic_80kb.csv", "mean_kb": 80.0, "std_kb": 42.9, "min_kb": 10.2, "max_kb": 149.8},
+    {"file": "traffic_95kb.csv", "mean_kb": 95.0, "std_kb": 50.9, "min_kb": 12.2, "max_kb": 177.8},
+    {"file": "traffic_120kb.csv", "mean_kb": 120.0, "std_kb": 64.3, "min_kb": 15.3, "max_kb": 224.7},
+]
 
-def load_pca_sweep_data() -> Dict[int, List[Dict]]:
+
+def load_pca_sweep_data(pca_file: Path) -> Dict[int, List[Dict]]:
     """Load PCA sweep data grouped by compression level (components)."""
     data_by_level = {level: [] for level in COMPRESSION_LEVELS}
     
-    with open(PCA_SWEEP_FILE, 'r') as f:
+    with open(pca_file, 'r') as f:
         reader = csv.DictReader(f)
         for row in reader:
             components = int(row['components'])
@@ -73,7 +86,13 @@ def create_user_pca_file(user_id: int, compression_level: int,
     return output_file
 
 
-def run_simulation(num_users: int, compression_levels: List[int], 
+def calculate_expected_frames(fps: int) -> int:
+    """Calculate expected frames based on FPS and simulation time."""
+    return fps * SIMULATION_TIME
+
+
+def run_simulation(num_users: int, compression_levels: List[int],
+                   fps_rates: List[int], traffic_profiles: List[Dict],
                    run_id: int, deadline_ms: float = 5.0) -> Dict:
     """Run a single simulation and return results."""
     
@@ -81,12 +100,14 @@ def run_simulation(num_users: int, compression_levels: List[int],
     run_dir = SIMULATION_DIR / f"run_temp_{run_id}_{os.getpid()}"
     run_dir.mkdir(exist_ok=True)
     
-    # Load PCA data
-    data_by_level = load_pca_sweep_data()
-    
-    # Generate per-user PCA files
+    # For each user, load their traffic profile and create filtered PCA file
     user_files = []
-    for i, comp_level in enumerate(compression_levels[:num_users]):
+    for i in range(num_users):
+        comp_level = compression_levels[i]
+        traffic_file = SIMULATION_DIR / traffic_profiles[i]['file']
+        
+        # Load the traffic profile data
+        data_by_level = load_pca_sweep_data(traffic_file)
         user_file = create_user_pca_file(i, comp_level, data_by_level, run_dir)
         user_files.append(user_file)
     
@@ -102,13 +123,17 @@ def run_simulation(num_users: int, compression_levels: List[int],
         f"--*.ue[*].app[0].deadlineMs={deadline_ms}ms",
     ]
     
-    # Add per-user PCA file paths (need quotes around paths containing dots)
-    for i, user_file in enumerate(user_files):
+    # Add per-user PCA file paths and FPS settings
+    for i in range(num_users):
+        user_file = user_files[i]
+        fps = fps_rates[i]
+        expected_frames = calculate_expected_frames(fps)
+        
         cmd.append(f'--*.server.app[{i}].pcaFile="{user_file}"')
+        cmd.append(f'--*.server.app[{i}].fps={fps}')
+        cmd.append(f'--*.ue[{i}].app[0].expectedFrames={expected_frames}')
     
     cmd.append("omnetpp.ini")
-    
-    # Only print in non-parallel mode (controlled by caller)
     
     try:
         result = subprocess.run(
@@ -123,12 +148,15 @@ def run_simulation(num_users: int, compression_levels: List[int],
         output = result.stdout + result.stderr
         
         # Extract per-user results from output
-        user_results = parse_simulation_output(output, num_users, compression_levels)
+        user_results = parse_simulation_output(output, num_users, compression_levels, 
+                                               fps_rates, traffic_profiles)
         
         return {
             'run_id': run_id,
             'num_users': num_users,
             'compression_levels': compression_levels[:num_users],
+            'fps_rates': fps_rates[:num_users],
+            'traffic_profiles': traffic_profiles[:num_users],
             'user_results': user_results,
             'success': result.returncode == 0
         }
@@ -146,7 +174,9 @@ def run_simulation(num_users: int, compression_levels: List[int],
 
 
 def parse_simulation_output(output: str, num_users: int, 
-                           compression_levels: List[int]) -> List[Dict]:
+                           compression_levels: List[int],
+                           fps_rates: List[int],
+                           traffic_profiles: List[Dict]) -> List[Dict]:
     """Parse simulation output to extract per-user metrics."""
     user_results = []
     
@@ -178,8 +208,10 @@ def parse_simulation_output(output: str, num_users: int,
         satisfied = match.group(6) == "YES"
         avg_cqi = float(match.group(7))
         
-        # Get compression level for this user
+        # Get compression level, FPS, and traffic profile for this user
         comp_level = compression_levels[user_id] if user_id < len(compression_levels) else 0
+        fps = fps_rates[user_id] if user_id < len(fps_rates) else 60
+        profile = traffic_profiles[user_id] if user_id < len(traffic_profiles) else TRAFFIC_PROFILES[0]
         
         # Try to extract MSE
         avg_mse = 0.0
@@ -190,7 +222,12 @@ def parse_simulation_output(output: str, num_users: int,
         
         user_results.append({
             'user_id': user_id,
+            'fps': fps,
             'compression_level': comp_level,
+            'size_mean_kb': profile['mean_kb'],
+            'size_min_kb': profile['min_kb'],
+            'size_max_kb': profile['max_kb'],
+            'size_std_kb': profile['std_kb'],
             'total_frames': total_frames,
             'on_time_frames': on_time_frames,
             'avg_delay_ms': avg_delay,
@@ -208,7 +245,8 @@ def save_results(all_results: List[Dict], output_file: Path) -> None:
     if not all_results:
         return
     
-    fieldnames = ['run_id', 'num_users', 'user_id', 'compression_level',
+    fieldnames = ['run_id', 'num_users', 'user_id', 'fps', 'compression_level',
+                  'size_mean_kb', 'size_min_kb', 'size_max_kb', 'size_std_kb',
                   'total_frames', 'on_time_frames', 'avg_delay_ms',
                   'delay_reliability', 'user_satisfied', 'avg_mse', 'avg_cqi']
     
@@ -218,17 +256,19 @@ def save_results(all_results: List[Dict], output_file: Path) -> None:
         writer.writerows(all_results)
 
 
-def run_simulation_worker(task: Tuple[int, int, List[int], float]) -> Dict:
+def run_simulation_worker(task: Tuple) -> Dict:
     """Worker function for parallel execution.
     
     Args:
-        task: Tuple of (run_id, num_users, compression_levels, deadline_ms)
+        task: Tuple of (run_id, num_users, compression_levels, fps_rates, 
+                       traffic_profiles, deadline_ms)
     
     Returns:
         Simulation result dictionary
     """
-    run_id, num_users, compression_levels, deadline_ms = task
-    return run_simulation(num_users, compression_levels, run_id, deadline_ms)
+    run_id, num_users, compression_levels, fps_rates, traffic_profiles, deadline_ms = task
+    return run_simulation(num_users, compression_levels, fps_rates, 
+                         traffic_profiles, run_id, deadline_ms)
 
 
 def generate_dataset(num_runs: int = DEFAULT_RUNS_PER_CONFIG,
@@ -250,6 +290,8 @@ def generate_dataset(num_runs: int = DEFAULT_RUNS_PER_CONFIG,
     print(f"Generating dataset with {num_runs} runs per user count")
     print(f"User range: {list(USER_RANGE)}")
     print(f"Compression levels: {COMPRESSION_LEVELS}")
+    print(f"FPS rates: {FPS_RATES}")
+    print(f"Traffic profiles: {[p['file'] for p in TRAFFIC_PROFILES]}")
     print(f"Deadline: {deadline_ms} ms")
     print(f"Workers: {num_workers}")
     print(f"Save interval: every {save_interval} completed tasks")
@@ -263,7 +305,11 @@ def generate_dataset(num_runs: int = DEFAULT_RUNS_PER_CONFIG,
             run_id += 1
             compression_levels = [random.choice(COMPRESSION_LEVELS) 
                                  for _ in range(num_users)]
-            tasks.append((run_id, num_users, compression_levels, deadline_ms))
+            fps_rates = [random.choice(FPS_RATES) for _ in range(num_users)]
+            traffic_profiles = [random.choice(TRAFFIC_PROFILES) 
+                               for _ in range(num_users)]
+            tasks.append((run_id, num_users, compression_levels, fps_rates,
+                         traffic_profiles, deadline_ms))
     
     total_tasks = len(tasks)
     print(f"Total simulation tasks: {total_tasks}")
@@ -342,21 +388,28 @@ def quick_test():
     
     num_users = 3
     compression_levels = [random.choice(COMPRESSION_LEVELS) for _ in range(num_users)]
+    fps_rates = [random.choice(FPS_RATES) for _ in range(num_users)]
+    traffic_profiles = [random.choice(TRAFFIC_PROFILES) for _ in range(num_users)]
     
-    print(f"Testing {num_users} users with compression levels: {compression_levels}")
+    print(f"Testing {num_users} users:")
+    for i in range(num_users):
+        print(f"  User {i}: comp={compression_levels[i]}, fps={fps_rates[i]}, "
+              f"traffic={traffic_profiles[i]['file']}")
     
-    result = run_simulation(num_users, compression_levels, run_id=999, deadline_ms=5.0)
+    result = run_simulation(num_users, compression_levels, fps_rates,
+                           traffic_profiles, run_id=999, deadline_ms=5.0)
     
     if result['success']:
         print("\nResults:")
         for user in result.get('user_results', []):
             print(f"  User {user['user_id']}: comp={user['compression_level']}, "
+                  f"fps={user['fps']}, "
                   f"delay={user['avg_delay_ms']:.2f}ms, "
                   f"reliability={user['delay_reliability']*100:.1f}%, "
                   f"CQI={user.get('avg_cqi', 0):.1f}, "
                   f"satisfied={user['user_satisfied']}")
     else:
-        print("Test failed!")
+        print(f"Test failed! Error: {result.get('error', 'unknown')}")
 
 
 if __name__ == "__main__":

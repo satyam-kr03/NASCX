@@ -19,7 +19,7 @@ from .utils import setup_logging, save_results, plot_results
 def main() -> None:
     """Main function to run the autoencoder training and evaluation."""
     parser = argparse.ArgumentParser(description="Train and evaluate variable rate autoencoder for video compression")
-    parser.add_argument("--video-path", type=Path, default=Path("../data/BigBuckBunny_320x180.mp4"),
+    parser.add_argument("--video-path", type=Path, default=Path("../data/sintel_trailer-1080p.mp4"),
                         help="Path to the input video file")
     parser.add_argument("--latent-channels", type=int, default=DEFAULT_LATENT_CHANNELS,
                         help="Number of latent channels")

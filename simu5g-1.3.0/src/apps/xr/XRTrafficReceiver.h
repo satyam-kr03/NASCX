@@ -82,6 +82,8 @@ namespace simu5g
         static bool globalStatsPrinted;
         static int finishedCount;
         static std::ofstream globalResultFile;
+        static std::ofstream userResultsFile;
+        static bool userResultsHeaderWritten;
         
         // CQI tracking
         double avgCqi_;

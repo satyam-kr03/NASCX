@@ -24,6 +24,8 @@ namespace simu5g
     bool XRTrafficReceiver::globalStatsPrinted = false;
     int XRTrafficReceiver::finishedCount = 0;
     std::ofstream XRTrafficReceiver::globalResultFile;
+    std::ofstream XRTrafficReceiver::userResultsFile;
+    bool XRTrafficReceiver::userResultsHeaderWritten = false;
 
     Define_Module(XRTrafficReceiver);
 
@@ -75,8 +77,8 @@ namespace simu5g
                 }
             }
 
-            std::cout << "XRTrafficReceiver: Initialized with deadline=" << deadlineMs
-                      << "ms, expected frames=" << expectedTotalFrames << endl;
+            EV_INFO << "XRTrafficReceiver: Initialized with deadline=" << deadlineMs
+                    << "ms, expected frames=" << expectedTotalFrames << endl;
         }
     }
 
@@ -86,7 +88,7 @@ namespace simu5g
         socket.setCallback(this);
         socket.bind(localPort);
 
-        std::cout << "XRTrafficReceiver: Socket bound to port " << localPort << endl;
+        EV_INFO << "XRTrafficReceiver: Socket bound to port " << localPort << endl;
     }
 
     void XRTrafficReceiver::handleStopOperation(LifecycleOperation *operation)
@@ -109,11 +111,9 @@ namespace simu5g
 
     void XRTrafficReceiver::socketDataArrived(UdpSocket *socket, Packet *packet)
     {
-        std::cout << "XRTrafficReceiver: Packet arrived from "
-                  << packet->getTag<L3AddressInd>()->getSrcAddress()
-                  << ", name: " << packet->getName() << endl;
-
-        std::cout << "Packet details: " << packet->str() << endl;
+        EV_DEBUG << "XRTrafficReceiver: Packet arrived from "
+                 << packet->getTag<L3AddressInd>()->getSrcAddress()
+                 << ", name: " << packet->getName() << endl;
 
         processFrame(packet);
     }
@@ -136,9 +136,9 @@ namespace simu5g
         int fragIndex = header->getFragIndex();
         int totalFragments = header->getTotalFragments();
 
-        std::cout << "Extracted header: Frame=" << frameNumber
-                  << ", Components=" << components
-                  << ", FragIndex=" << fragIndex << "/" << totalFragments << endl;
+        EV_DEBUG << "Extracted header: Frame=" << frameNumber
+                 << ", Components=" << components
+                 << ", FragIndex=" << fragIndex << "/" << totalFragments << endl;
 
         simtime_t recvTime = simTime();
 
@@ -146,7 +146,7 @@ namespace simu5g
         {
             trackingStarted = true;
             firstFrameTime = recvTime;
-            std::cout << "XRTrafficReceiver: Started tracking at t=" << recvTime << endl;
+            EV_INFO << "XRTrafficReceiver: Started tracking at t=" << recvTime << endl;
         }
 
         if (receivedFrames.find(frameNumber) == receivedFrames.end())
@@ -166,16 +166,16 @@ namespace simu5g
 
             receivedFrames[frameNumber] = stats;
 
-            std::cout << "Received first fragment " << fragIndex << "/" << totalFragments
-                      << " of frame " << frameNumber << endl;
+            EV_DEBUG << "Received first fragment " << fragIndex << "/" << totalFragments
+                     << " of frame " << frameNumber << endl;
         }
         else
         {
             receivedFrames[frameNumber].fragmentsReceived++;
 
-            std::cout << "Received fragment " << fragIndex << "/" << totalFragments
-                      << " of frame " << frameNumber << " (total: "
-                      << receivedFrames[frameNumber].fragmentsReceived << ")" << endl;
+            EV_DEBUG << "Received fragment " << fragIndex << "/" << totalFragments
+                     << " of frame " << frameNumber << " (total: "
+                     << receivedFrames[frameNumber].fragmentsReceived << ")" << endl;
         }
 
         if (receivedFrames[frameNumber].fragmentsReceived == totalFragments)
@@ -214,9 +214,9 @@ namespace simu5g
                            << deadlineMs << endl;
             }
 
-            std::cout << "Frame " << frameNumber << " COMPLETE: delay=" << delay
-                      << "ms, onTime=" << onTime << ", MSE=" << mse
-                      << ", error=" << effectiveError << endl;
+            EV_DEBUG << "Frame " << frameNumber << " COMPLETE: delay=" << delay
+                     << "ms, onTime=" << onTime << ", MSE=" << mse
+                     << ", error=" << effectiveError << endl;
         }
 
         delete packet;
@@ -224,7 +224,7 @@ namespace simu5g
 
     void XRTrafficReceiver::detectLostFrames()
     {
-        std::cout << "XRTrafficReceiver: Detecting lost frames..." << endl;
+        EV_DEBUG << "XRTrafficReceiver: Detecting lost frames..." << endl;
 
         int lostCount = 0;
         for (int i = 1; i <= expectedTotalFrames; i++)
@@ -253,7 +253,7 @@ namespace simu5g
             }
         }
 
-        std::cout << "Total lost frames: " << lostCount << " out of " << expectedTotalFrames << endl;
+        EV_DEBUG << "Total lost frames: " << lostCount << " out of " << expectedTotalFrames << endl;
     }
 
     void XRTrafficReceiver::computeAndRecordQoE()
@@ -402,6 +402,60 @@ namespace simu5g
 
         finishedCount++; // Increment BEFORE the check
 
+        // Extract user_id from module path (e.g., "Network.ue[2].app[0]" -> 2)
+        std::string fullPath = getFullPath();
+        int userId = 0;
+        std::size_t uePos = fullPath.find("ue[");
+        if (uePos != std::string::npos) {
+            std::size_t startPos = uePos + 3;
+            std::size_t endPos = fullPath.find("]", startPos);
+            if (endPos != std::string::npos) {
+                userId = std::stoi(fullPath.substr(startPos, endPos - startPos));
+            }
+        }
+
+        // Write per-user results to user_results.csv
+        if (!userResultsHeaderWritten) {
+            userResultsFile.open("user_results.csv", std::ios::out);
+            if (userResultsFile.is_open()) {
+                userResultsFile << "user_id,total_frames,on_time_frames,avg_delay_ms,delay_reliability,user_satisfied,avg_mse,avg_cqi" << std::endl;
+                userResultsHeaderWritten = true;
+            }
+        } else {
+            userResultsFile.open("user_results.csv", std::ios::app);
+        }
+
+        if (userResultsFile.is_open()) {
+            // Calculate avg delay from received frames
+            double sumDelay = 0.0;
+            int receivedCount = 0;
+            int onTimeCount = 0;
+            double sumError = 0.0;
+            for (int i = 1; i <= expectedTotalFrames; i++) {
+                const auto &stats = receivedFrames[i];
+                sumError += stats.effectiveError;
+                if (stats.delay >= 0) {
+                    receivedCount++;
+                    sumDelay += stats.delay;
+                    if (stats.receivedOnTime) onTimeCount++;
+                }
+            }
+            double avgDelay = (receivedCount > 0) ? sumDelay / receivedCount : 0.0;
+            double meanError = (expectedTotalFrames > 0) ? sumError / expectedTotalFrames : 0.0;
+            double delayReliability = (double)onTimeCount / expectedTotalFrames;
+            bool userSatisfied = (delayReliability >= reliabilityThreshold);
+
+            userResultsFile << userId << ","
+                           << expectedTotalFrames << ","
+                           << onTimeCount << ","
+                           << std::fixed << std::setprecision(6) << avgDelay << ","
+                           << std::setprecision(6) << delayReliability << ","
+                           << (userSatisfied ? 1 : 0) << ","
+                           << std::setprecision(6) << meanError << ","
+                           << std::setprecision(2) << avgCqi_ << std::endl;
+            userResultsFile.close();
+        }
+
         if (finishedCount == userCount && !globalStatsPrinted) // Changed condition
         {
             double globalAvgMeanError = (totalExpectedFrames > 0) ? totalSumError / totalExpectedFrames : 0.0;
@@ -436,7 +490,7 @@ namespace simu5g
 
     void XRTrafficReceiver::socketClosed(UdpSocket *socket)
     {
-        std::cout << "Socket closed" << endl;
+        EV_DEBUG << "Socket closed" << endl;
     }
 
 } // namespace simu5g

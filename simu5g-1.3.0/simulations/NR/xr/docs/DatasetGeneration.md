@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the dataset generation framework for training ML models to predict optimal video compression levels based on network conditions. The dataset captures the relationship between CQI, number of users, compression level, FPS, traffic profile, and resulting QoE metrics.
+This document describes the dataset generation script for training ML models to predict optimal video compression levels. The script runs Simu5G simulations with varying parameters and collects QoE metrics.
 
 ---
 
@@ -48,39 +48,45 @@ python3 generate_traffic_profiles.py
 
 ---
 
-## FPS Rates
-
-Each user is randomly assigned one of: **60, 72, 90, 120** fps.
-Expected frame count = `fps × sim-time` (default 20s).
-
----
-
 ## Usage
 
 ```bash
-cd /home/teaching/Projects/NASCX
-./opp_shell.sh
 cd simu5g-1.3.0/simulations/NR/xr
 
 # Generate traffic profiles first
 python3 generate_traffic_profiles.py
 
-# Quick test (3 users, 1 run)
-python3 generate_dataset.py --test
-
-# Full dataset generation (parallel)
-python3 generate_dataset.py --runs 10 --workers 8
+# Run dataset generation
+python3 generate_dataset.py
 ```
 
-### Parameters
+### Configuration
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--runs` | 10 | Number of runs per user count |
-| `--deadline` | 5.0 | Delay deadline in ms |
-| `--seed` | 42 | Random seed |
-| `--workers` | 16 | Parallel workers |
-| `--test` | - | Quick test with 3 users |
+Edit parameters directly in `generate_dataset.py`:
+
+```python
+# At the bottom of the file:
+generate_dataset(num_runs=10, deadline_ms=5.0, seed=42)
+```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `num_runs` | 10 | Number of runs per user count |
+| `deadline_ms` | 5.0 | Delay deadline in ms |
+| `seed` | 42 | Random seed for reproducibility |
+
+---
+
+## How It Works
+
+1. **Loop through user counts** (2 to 10 users)
+2. **For each run**, randomly assign:
+   - Compression level per user (5, 10, 15, ..., 80)
+   - FPS per user (60, 72, 90, 120)
+   - Traffic profile per user
+3. **Run simulation** using `simu5g` command
+4. **Parse results** from `user_results.csv` (written by `XRTrafficReceiver`)
+5. **Save merged dataset** to `compression_dataset.csv`
 
 ---
 
@@ -88,8 +94,7 @@ python3 generate_dataset.py --runs 10 --workers 8
 
 | File | Description |
 |------|-------------|
-| `generate_traffic_profiles.py` | Generates synthetic traffic CSV files |
-| `generate_dataset.py` | Runs simulations and generates dataset |
+| `generate_dataset.py` | Main script (~175 lines) |
 | `traffic_*.csv` | Traffic profiles (5 variants) |
 | `compression_dataset.csv` | Output dataset |
-| `traffic_profiles_metadata.csv` | Traffic profile statistics |
+| `omnetpp.ini` | Simulation config (uses `XR-DL-Dataset`) |

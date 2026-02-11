@@ -34,8 +34,8 @@ import joblib
 from pathlib import Path
 
 # Configuration
-DATASET_PATH = Path(__file__).parent / "per_frame_dataset.csv"
-MODEL_PATH = Path(__file__).parent / "compression_model_dynamic.joblib"
+DATASET_PATH = Path(__file__).parent / "datasets" / "per_frame_dataset.csv"
+MODEL_PATH = Path(__file__).parent / "models" / "compression_model_dynamic.joblib"
 VALID_COMPRESSION_LEVELS = np.array([5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80])
 
 # Binning parameters

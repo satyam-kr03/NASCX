@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iomanip>
 #include <numeric>
+#include <sstream>
 
 namespace simu5g
 {
@@ -29,7 +30,7 @@ namespace simu5g
 
     XRTrafficReceiver::XRTrafficReceiver()
         : expectedTotalFrames(100), nextExpectedFrame(1), trackingStarted(false), qoeComputed(false),
-          avgCqi_(0.0), phyUe_(nullptr)
+          elostValue(1000.0), autoElost(true), avgCqi_(0.0), phyUe_(nullptr)
     {
     }
 
@@ -49,6 +50,24 @@ namespace simu5g
             deadlineMs = par("deadlineMs").doubleValue();
             reliabilityThreshold = par("reliabilityThreshold").doubleValue();
             expectedTotalFrames = par("expectedFrames").intValue();
+
+            // Read Elost parameters
+            autoElost = par("autoElost").boolValue();
+            if (autoElost)
+            {
+                std::string pcaFile = par("pcaFile").stdstringValue();
+                int minComponents = par("minComponents").intValue();
+                elostValue = getMaxMSE(pcaFile, minComponents);
+                std::cout << "XRTrafficReceiver: autoElost=true, computed Elost="
+                          << elostValue << " from max MSE at components="
+                          << minComponents << endl;
+            }
+            else
+            {
+                elostValue = par("elostValue").doubleValue();
+                std::cout << "XRTrafficReceiver: autoElost=false, manual Elost="
+                          << elostValue << endl;
+            }
 
             nextExpectedFrame = 1;
             trackingStarted = false;
@@ -76,7 +95,8 @@ namespace simu5g
             }
 
             std::cout << "XRTrafficReceiver: Initialized with deadline=" << deadlineMs
-                      << "ms, expected frames=" << expectedTotalFrames << endl;
+                      << "ms, expected frames=" << expectedTotalFrames
+                      << ", Elost=" << elostValue << endl;
         }
     }
 
@@ -160,7 +180,7 @@ namespace simu5g
             stats.recvTime = recvTime;
             stats.delay = -1; // mark as incomplete until all fragments arrive
             stats.receivedOnTime = false;
-            stats.effectiveError = 1000.0; // default penalty for frames that never complete
+            stats.effectiveError = elostValue; // penalty for frames that never complete
             stats.fragmentsReceived = 1;
             stats.totalFragments = totalFragments;
 
@@ -193,8 +213,8 @@ namespace simu5g
             }
             else
             {
-                // Fixed error of 1000 for late frames
-                effectiveError = 1000.0;
+                // Penalty = max MSE at most aggressive compression level
+                effectiveError = elostValue;
             }
             receivedFrames[frameNumber].effectiveError = effectiveError;
 
@@ -240,14 +260,14 @@ namespace simu5g
                 lostStats.recvTime = 0;
                 lostStats.delay = -1;
                 lostStats.receivedOnTime = false;
-                lostStats.effectiveError = 1000.0;
+                lostStats.effectiveError = elostValue;
 
                 receivedFrames[i] = lostStats;
                 lostCount++;
 
                 if (resultFile.is_open())
                 {
-                    resultFile << i << ",0,0,0,0,0,-1,0,1000,"
+                    resultFile << i << ",0,0,0,0,0,-1,0," << elostValue << ","
                                << deadlineMs << endl;
                 }
             }
@@ -353,8 +373,8 @@ namespace simu5g
         std::cout << "Total frames:      " << totalFrames << endl;
         std::cout << "Received frames:   " << receivedCount << " (" << (deliveryRatio * 100) << "%)" << endl;
         std::cout << "On-time frames:    " << onTimeCount << " (" << (onTimeRatio * 100) << "%)" << endl;
-        std::cout << "Late frames:       " << lateCount << " (error=1000 each)" << endl;
-        std::cout << "Lost frames:       " << lostCount << " (error=1000 each, " << (lossRatio * 100) << "%)" << endl;
+        std::cout << "Late frames:       " << lateCount << " (error=" << elostValue << " each)" << endl;
+        std::cout << "Lost frames:       " << lostCount << " (error=" << elostValue << " each, " << (lossRatio * 100) << "%)" << endl;
         std::cout << "Mean Error (QoE):  " << meanError << " (sumError=" << sumError << ")" << endl;
         std::cout << "Avg Delay:         " << avgDelay << " ms" << endl;
         std::cout << "Deadline:          " << deadlineMs << " ms" << endl;
@@ -437,6 +457,80 @@ namespace simu5g
     void XRTrafficReceiver::socketClosed(UdpSocket *socket)
     {
         std::cout << "Socket closed" << endl;
+    }
+
+    double XRTrafficReceiver::getMaxMSE(const std::string &pcaFile, int minComponents)
+    {
+        if (pcaFile.empty())
+        {
+            EV_WARN << "No pcaFile specified for autoElost, using default 1000.0" << endl;
+            return 1000.0;
+        }
+
+        std::ifstream f(pcaFile);
+        if (!f.is_open())
+        {
+            EV_WARN << "Cannot open PCA file: " << pcaFile
+                    << ", using default 1000.0" << endl;
+            return 1000.0;
+        }
+
+        std::string line;
+        // Skip header
+        std::getline(f, line);
+
+        double maxMSE = 0.0;
+        int count = 0;
+
+        while (std::getline(f, line))
+        {
+            if (line.empty())
+                continue;
+
+            std::stringstream ss(line);
+            std::string field;
+            std::vector<std::string> fields;
+
+            while (std::getline(ss, field, ','))
+            {
+                field.erase(std::remove_if(field.begin(), field.end(), ::isspace), field.end());
+                fields.push_back(field);
+            }
+
+            if (fields.size() < 3)
+                continue;
+
+            try
+            {
+                int components = std::stoi(fields[1]);
+                double mse = std::stod(fields[2]);
+
+                if (components == minComponents)
+                {
+                    if (mse > maxMSE)
+                        maxMSE = mse;
+                    count++;
+                }
+            }
+            catch (const std::exception &e)
+            {
+                continue;
+            }
+        }
+
+        f.close();
+
+        if (count == 0)
+        {
+            EV_WARN << "No rows with components=" << minComponents
+                    << " found in " << pcaFile << ", using default 1000.0" << endl;
+            return 1000.0;
+        }
+
+        std::cout << "XRTrafficReceiver::getMaxMSE: Found " << count
+                  << " rows at components=" << minComponents
+                  << ", maxMSE=" << maxMSE << endl;
+        return maxMSE;
     }
 
 } // namespace simu5g

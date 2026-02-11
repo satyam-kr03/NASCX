@@ -1,2 +1,2 @@
 num_users,satisfied_users,global_avg_mean_error,global_delay_reliability,total_frames,total_ontime_frames
-7,0,997.45,0.00263605,11760,31
+9,0,970.058,0.0310792,14640,455

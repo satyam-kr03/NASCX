@@ -40,8 +40,10 @@ simple XRTrafficReceiver like IApp
         // QoE parameters
         double deadlineMs @unit(ms) = default(2.5ms);  // Frame deadline in milliseconds (2.5ms for low-latency XR)
         double reliabilityThreshold = default(0.99);   // Delay reliability threshold (99%)
-        bool autoElost = default(true);  // Automatically set Elost to max MSE
+        bool autoElost = default(true);  // Automatically set Elost to max MSE at minComponents
         double elostValue = default(0);  // Manual Elost value (used if autoElost=false)
+        string pcaFile = default("");    // PCA sweep CSV (needed when autoElost=true)
+        int minComponents = default(5);  // Most aggressive compression level
         int expectedFrames = default(1200);  // Expected number of frames (20s * 60fps)
         
         // Output parameters

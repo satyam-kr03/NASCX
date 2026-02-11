@@ -45,15 +45,15 @@ DEFAULT_RUNS_PER_CONFIG = 5
 DEFAULT_NUM_WORKERS = min(16, cpu_count())
 SIMULATION_DIR = Path(__file__).parent
 SIMULATION_TIME = 20  # seconds
-DATASET_OUTPUT = SIMULATION_DIR / "per_frame_dataset.csv"
+DATASET_OUTPUT = SIMULATION_DIR / "datasets" / "per_frame_dataset.csv"
 
 # Traffic profile configuration
 TRAFFIC_PROFILES = [
-    {"file": "traffic_45kb.csv", "mean_kb": 45.0, "std_kb": 24.1, "min_kb": 5.8, "max_kb": 84.2},
-    {"file": "traffic_65kb.csv", "mean_kb": 65.0, "std_kb": 34.8, "min_kb": 8.3, "max_kb": 121.7},
-    {"file": "traffic_80kb.csv", "mean_kb": 80.0, "std_kb": 42.9, "min_kb": 10.2, "max_kb": 149.8},
-    {"file": "traffic_95kb.csv", "mean_kb": 95.0, "std_kb": 50.9, "min_kb": 12.2, "max_kb": 177.8},
-    {"file": "traffic_120kb.csv", "mean_kb": 120.0, "std_kb": 64.3, "min_kb": 15.3, "max_kb": 224.7},
+    {"file": "traffic_files/traffic_45kb.csv", "mean_kb": 45.0, "std_kb": 24.1, "min_kb": 5.8, "max_kb": 84.2},
+    {"file": "traffic_files/traffic_65kb.csv", "mean_kb": 65.0, "std_kb": 34.8, "min_kb": 8.3, "max_kb": 121.7},
+    {"file": "traffic_files/traffic_80kb.csv", "mean_kb": 80.0, "std_kb": 42.9, "min_kb": 10.2, "max_kb": 149.8},
+    {"file": "traffic_files/traffic_95kb.csv", "mean_kb": 95.0, "std_kb": 50.9, "min_kb": 12.2, "max_kb": 177.8},
+    {"file": "traffic_files/traffic_120kb.csv", "mean_kb": 120.0, "std_kb": 64.3, "min_kb": 15.3, "max_kb": 224.7},
 ]
 
 # Output dataset columns

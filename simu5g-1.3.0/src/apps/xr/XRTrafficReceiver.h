@@ -73,7 +73,6 @@ namespace simu5g
         string resultFilename;
 
         // Static variables for global statistics
-        static double totalAvgMse;
         static double totalSumError;
         static int totalExpectedFrames;
         static int totalOnTimeFrames;
@@ -107,7 +106,7 @@ namespace simu5g
         void processFrame(Packet *packet);
         void detectLostFrames();
         void computeAndRecordQoE();
-        double getMaxMSE();
+        double getMaxMSE(const std::string &pcaFile, int minComponents);
 
     public:
         XRTrafficReceiver();

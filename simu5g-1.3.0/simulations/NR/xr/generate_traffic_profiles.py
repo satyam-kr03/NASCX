@@ -20,7 +20,9 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 SIMULATION_DIR = Path(__file__).parent
-SOURCE_FILE = SIMULATION_DIR / "pca_sweep_summary_scaled.csv"
+TRAFFIC_DIR = SIMULATION_DIR / "traffic_files"
+TRAFFIC_DIR.mkdir(exist_ok=True)
+SOURCE_FILE = TRAFFIC_DIR / "pca_sweep_summary_scaled.csv"
 
 # Traffic profile configurations: (target_mean_kb, name)
 TRAFFIC_PROFILES = [
@@ -126,7 +128,7 @@ def main():
     # Generate each profile
     profiles_metadata = []
     for target_mean_kb, filename in TRAFFIC_PROFILES:
-        output_path = SIMULATION_DIR / filename
+        output_path = TRAFFIC_DIR / filename
         print(f"Generating {filename} (target mean: {target_mean_kb} KB)...")
         
         stats = generate_profile(rows, source_mean, source_std, target_mean_kb, output_path)
@@ -138,7 +140,7 @@ def main():
         print()
     
     # Write metadata file for use by dataset generator
-    metadata_file = SIMULATION_DIR / "traffic_profiles_metadata.csv"
+    metadata_file = TRAFFIC_DIR / "traffic_profiles_metadata.csv"
     with open(metadata_file, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=['file', 'mean_kb', 'std_kb', 'min_kb', 'max_kb', 'num_rows'])
         writer.writeheader()

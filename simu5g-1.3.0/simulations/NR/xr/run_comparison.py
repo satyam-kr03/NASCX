@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-Comparison Study: ML-Dynamic vs Uncompressed
+Comparison Study: ML-Dynamic vs Fixed-Static vs Uncompressed
 
 This script runs simulations comparing:
-1. Uncompressed (baseline) — all frames use components=80 (maximum quality, least compression)
-2. ML-guided dynamic compression — per-frame adaptive compression levels
+1. Uncompressed (motivation) — all frames use components=80 (maximum quality, least compression)
+2. Fixed-Static (fair baseline) — all frames use a single fixed compression level
+3. ML-guided dynamic compression — per-frame adaptive compression levels
 
-The goal is to demonstrate that per-frame dynamic compression achieves
-better delivery reliability while maintaining acceptable quality compared
-to sending frames at full (uncompressed-equivalent) quality.
+The fixed-static sweep tests several compression levels and picks the one
+with the lowest average MSE as the "Best Fixed" baseline. This is a much
+fairer comparison than uncompressed alone, since it answers:
+  "Does intelligent per-frame compression beat the best naive fixed strategy?"
 
 Usage:
     # Start model server first:
@@ -36,21 +38,22 @@ import multiprocessing
 # Configuration
 COMPRESSION_LEVELS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80]
 MAX_COMPRESSION = 80  # "Uncompressed-equivalent" — maximum quality, least compression
+FIXED_STATIC_LEVELS = [10, 20, 30, 40, 50, 60, 70]  # Levels to sweep for fixed-static baseline
 FPS_RATES = [60, 72, 90, 120]  # Supported frame rates
 USER_RANGE = range(2, 11)  # 2 to 10 users
 DEFAULT_RUNS = 10
 SIMULATION_DIR = Path(__file__).parent
-PCA_FILE = SIMULATION_DIR / "pca_sweep_summary_scaled.csv"
+PCA_FILE = SIMULATION_DIR / "traffic_files" / "pca_sweep_summary_scaled.csv"
 MODEL_SERVER_URL = "http://localhost:8000"
 SIMULATION_TIME = 20  # seconds
 
 # Traffic profile configuration (matching generate_dataset.py)
 TRAFFIC_PROFILES = [
-    {"file": "traffic_45kb.csv", "mean_kb": 45.0, "std_kb": 24.1, "min_kb": 5.8, "max_kb": 84.2},
-    {"file": "traffic_65kb.csv", "mean_kb": 65.0, "std_kb": 34.8, "min_kb": 8.3, "max_kb": 121.7},
-    {"file": "traffic_80kb.csv", "mean_kb": 80.0, "std_kb": 42.9, "min_kb": 10.2, "max_kb": 149.8},
-    {"file": "traffic_95kb.csv", "mean_kb": 95.0, "std_kb": 50.9, "min_kb": 12.2, "max_kb": 177.8},
-    {"file": "traffic_120kb.csv", "mean_kb": 120.0, "std_kb": 64.3, "min_kb": 15.3, "max_kb": 224.7},
+    {"file": "traffic_files/traffic_45kb.csv", "mean_kb": 45.0, "std_kb": 24.1, "min_kb": 5.8, "max_kb": 84.2},
+    {"file": "traffic_files/traffic_65kb.csv", "mean_kb": 65.0, "std_kb": 34.8, "min_kb": 8.3, "max_kb": 121.7},
+    {"file": "traffic_files/traffic_80kb.csv", "mean_kb": 80.0, "std_kb": 42.9, "min_kb": 10.2, "max_kb": 149.8},
+    {"file": "traffic_files/traffic_95kb.csv", "mean_kb": 95.0, "std_kb": 50.9, "min_kb": 12.2, "max_kb": 177.8},
+    {"file": "traffic_files/traffic_120kb.csv", "mean_kb": 120.0, "std_kb": 64.3, "min_kb": 15.3, "max_kb": 224.7},
 ]
 
 # Output files
@@ -252,9 +255,11 @@ def run_cqi_warmup(num_users: int, fps_rates: List[int], traffic_profiles: List[
     # Add per-user PCA file paths, FPS, and expected frames
     for i, user_file in enumerate(user_files):
         fps = fps_rates[i]
+        traffic_file = SIMULATION_DIR / traffic_profiles[i]['file']
         cmd.append(f'--*.server.app[{i}].pcaFile="{user_file}"')
         cmd.append(f'--*.server.app[{i}].fps={fps}')
         cmd.append(f'--*.ue[{i}].app[0].expectedFrames={warmup_frames}')
+        cmd.append(f'--*.ue[{i}].app[0].pcaFile="{traffic_file}"')
     
     cmd.append("omnetpp.ini")
     
@@ -410,9 +415,11 @@ def run_simulation(num_users: int, compression_levels: List[int],
     for i, user_file in enumerate(user_files):
         fps = fps_rates[i]
         expected_frames = fps * SIMULATION_TIME
+        traffic_file = SIMULATION_DIR / traffic_profiles[i]['file']
         cmd.append(f'--*.server.app[{i}].pcaFile="{user_file}"')
         cmd.append(f'--*.server.app[{i}].fps={fps}')
         cmd.append(f'--*.ue[{i}].app[0].expectedFrames={expected_frames}')
+        cmd.append(f'--*.ue[{i}].app[0].pcaFile="{traffic_file}"')
     
     cmd.append("omnetpp.ini")
     
@@ -558,6 +565,10 @@ def run_single_task(task: Dict) -> Optional[Dict]:
     elif mode == "uncompressed":
         # Uncompressed: all users use components=80 (maximum quality)
         compression_levels = [MAX_COMPRESSION] * num_users
+    elif mode.startswith("fixed-static-"):
+        # Fixed-static: all users use the same fixed compression level
+        fixed_level = int(mode.split("-")[-1])
+        compression_levels = [fixed_level] * num_users
     else:
         raise ValueError(f"Unknown mode: {mode}")
     
@@ -579,7 +590,13 @@ def run_single_task(task: Dict) -> Optional[Dict]:
 
 
 def run_comparison_study(num_runs: int = DEFAULT_RUNS, seed: int = 42):
-    """Run the full comparison study with parallel execution."""
+    """Run the full comparison study with parallel execution.
+    
+    Runs three types of simulations:
+    1. Uncompressed (motivation baseline) — components=80
+    2. Fixed-Static sweep (fair baseline) — one run per fixed level in FIXED_STATIC_LEVELS
+    3. ML-Dynamic (our method) — per-frame adaptive compression
+    """
     
     # Create results directory
     RESULTS_DIR.mkdir(exist_ok=True)
@@ -596,17 +613,23 @@ def run_comparison_study(num_runs: int = DEFAULT_RUNS, seed: int = 42):
         print("WARNING: Model server not running, ml-dynamic mode will fail")
         print("         Start with: python3 model_server.py &")
     
+    # Build list of all modes to test
+    modes = ["uncompressed"]
+    for level in FIXED_STATIC_LEVELS:
+        modes.append(f"fixed-static-{level}")
+    modes.append("ml-dynamic")
+    
     # Build list of all tasks to run
     tasks = []
     run_id = 0
-    for mode in ["uncompressed", "ml-dynamic"]:
+    for mode in modes:
         for num_users in USER_RANGE:
             for run_idx in range(num_runs):
                 run_id += 1
                 run_seed = seed + run_id + (2000 if mode == "ml-dynamic" else 0)
                 random.seed(run_seed)
                 
-                # Assign FPS and traffic profiles per user (same seed offset for both modes)
+                # Assign FPS and traffic profiles per user
                 fps_rates = [random.choice(FPS_RATES) for _ in range(num_users)]
                 traffic_profiles = [random.choice(TRAFFIC_PROFILES) for _ in range(num_users)]
                 
@@ -621,9 +644,11 @@ def run_comparison_study(num_runs: int = DEFAULT_RUNS, seed: int = 42):
                 })
     
     total_tasks = len(tasks)
-    print(f"\n{'='*50}")
+    print(f"\n{'='*60}")
     print(f"Running {total_tasks} simulations with {MAX_WORKERS} parallel workers")
-    print(f"{'='*50}")
+    print(f"  Modes: {modes}")
+    print(f"  Users: {list(USER_RANGE)}, Runs per config: {num_runs}")
+    print(f"{'='*60}")
     
     completed = 0
     failed = 0
@@ -641,13 +666,13 @@ def run_comparison_study(num_runs: int = DEFAULT_RUNS, seed: int = 42):
                 if result and result['success']:
                     all_results.extend(result['rows'])
                     completed += 1
-                    print(f"  [{completed + failed}/{total_tasks}] {task['mode']:12s} users={task['num_users']:2d} run={task['run_idx']+1}: OK ({len(result['rows'])} users)")
+                    print(f"  [{completed + failed}/{total_tasks}] {task['mode']:20s} users={task['num_users']:2d} run={task['run_idx']+1}: OK ({len(result['rows'])} users)")
                 else:
                     failed += 1
-                    print(f"  [{completed + failed}/{total_tasks}] {task['mode']:12s} users={task['num_users']:2d} run={task['run_idx']+1}: FAILED")
+                    print(f"  [{completed + failed}/{total_tasks}] {task['mode']:20s} users={task['num_users']:2d} run={task['run_idx']+1}: FAILED")
             except Exception as e:
                 failed += 1
-                print(f"  [{completed + failed}/{total_tasks}] {task['mode']:12s} users={task['num_users']:2d} run={task['run_idx']+1}: ERROR - {e}")
+                print(f"  [{completed + failed}/{total_tasks}] {task['mode']:20s} users={task['num_users']:2d} run={task['run_idx']+1}: ERROR - {e}")
     
     # Save results
     if all_results:
@@ -662,9 +687,9 @@ def run_comparison_study(num_runs: int = DEFAULT_RUNS, seed: int = 42):
             writer.writeheader()
             writer.writerows(all_results)
         
-        print(f"\n{'='*50}")
+        print(f"\n{'='*60}")
         print("COMPARISON STUDY COMPLETE")
-        print(f"{'='*50}")
+        print(f"{'='*60}")
         print(f"Completed: {completed}, Failed: {failed}")
         print(f"Total rows: {len(all_results)}")
         print(f"Output file: {output_file}")
@@ -676,10 +701,12 @@ def run_comparison_study(num_runs: int = DEFAULT_RUNS, seed: int = 42):
 
 
 def print_summary(results: List[Dict]):
-    """Print summary comparison of Uncompressed vs ML-Dynamic."""
+    """Print summary comparison: Uncompressed vs Fixed-Static (Best) vs ML-Dynamic.
     
-    modes = ['uncompressed', 'ml-dynamic']
-    mode_labels = {'uncompressed': 'Uncompressed', 'ml-dynamic': 'ML-Dynamic'}
+    For fixed-static, we find the level with the lowest average MSE
+    (which already penalizes late/lost frames with max MSE at 5 components) and use
+    that as the "Best Fixed" baseline.
+    """
     
     def calc_stats(data):
         if not data:
@@ -697,25 +724,74 @@ def print_summary(results: List[Dict]):
             'satisfaction_rate': sum(satisfied) / len(satisfied) if satisfied else 0
         }
     
-    mode_stats = {}
-    for mode in modes:
-        mode_data = [r for r in results if r['mode'] == mode]
-        if mode_data:
-            mode_stats[mode] = calc_stats(mode_data)
+    # ---- Compute stats for each mode ----
+    all_mode_stats = {}
     
-    print(f"\n{'='*70}")
+    # Uncompressed
+    uncomp_data = [r for r in results if r['mode'] == 'uncompressed']
+    if uncomp_data:
+        all_mode_stats['uncompressed'] = calc_stats(uncomp_data)
+    
+    # ML-Dynamic
+    dynamic_data = [r for r in results if r['mode'] == 'ml-dynamic']
+    if dynamic_data:
+        all_mode_stats['ml-dynamic'] = calc_stats(dynamic_data)
+    
+    # ---- Fixed-Static: find the best level by lowest MSE ----
+    fixed_modes = sorted(set(r['mode'] for r in results if r['mode'].startswith('fixed-static-')))
+    fixed_level_stats = {}
+    for fm in fixed_modes:
+        fm_data = [r for r in results if r['mode'] == fm]
+        if fm_data:
+            level = int(fm.split('-')[-1])
+            stats = calc_stats(fm_data)
+            stats['level'] = level
+            fixed_level_stats[level] = stats
+    
+    best_fixed_level = None
+    best_fixed_stats = None
+    if fixed_level_stats:
+        best_fixed_level = min(fixed_level_stats, key=lambda l: fixed_level_stats[l]['avg_mse'])
+        best_fixed_stats = fixed_level_stats[best_fixed_level]
+        all_mode_stats['best-fixed'] = best_fixed_stats
+    
+    # ---- Print Fixed-Static Sweep ----
+    if fixed_level_stats:
+        print(f"\n{'='*80}")
+        print("FIXED-STATIC SWEEP (finding best fixed compression level)")
+        print(f"{'='*80}")
+        print(f"{'Level':<10} {'Avg MSE':<12} {'Avg Delay':<12} {'Reliability':<14} {'Satisfaction':<14}")
+        print("-" * 80)
+        for level in sorted(fixed_level_stats.keys()):
+            s = fixed_level_stats[level]
+            marker = "  ← BEST" if level == best_fixed_level else ""
+            print(f"{level:<10} {s['avg_mse']:<12.2f} {s['avg_delay']:<12.2f} {s['avg_reliability']*100:<13.1f}% {s['satisfaction_rate']*100:<13.1f}%{marker}")
+        print(f"\nBest fixed level: components={best_fixed_level} (lowest Avg MSE = {best_fixed_stats['avg_mse']:.2f})")
+    
+    # ---- Print 3-way Summary ----
+    print(f"\n{'='*80}")
     print("SUMMARY STATISTICS")
-    print(f"{'='*70}")
+    print(f"{'='*80}")
+    
+    # Define display columns
+    display_modes = []
+    display_labels = {}
+    if 'uncompressed' in all_mode_stats:
+        display_modes.append('uncompressed')
+        display_labels['uncompressed'] = 'Uncompressed'
+    if 'best-fixed' in all_mode_stats:
+        display_modes.append('best-fixed')
+        display_labels['best-fixed'] = f'Best Fixed ({best_fixed_level})'
+    if 'ml-dynamic' in all_mode_stats:
+        display_modes.append('ml-dynamic')
+        display_labels['ml-dynamic'] = 'ML-Dynamic'
     
     # Header
     header = f"{'Metric':<25}"
-    for mode in modes:
-        if mode in mode_stats:
-            header += f" {mode_labels[mode]:<15}"
+    for mode in display_modes:
+        header += f" {display_labels[mode]:<20}"
     print(header)
-    print("-" * 70)
-    
-    uncomp_stats = mode_stats.get('uncompressed', {})
+    print("-" * 80)
     
     # Print each metric
     metrics = [
@@ -727,45 +803,64 @@ def print_summary(results: List[Dict]):
     
     for label, key, direction in metrics:
         line = f"{label:<25}"
-        for mode in modes:
-            if mode not in mode_stats:
-                continue
-            val = mode_stats[mode].get(key, 0)
+        for mode in display_modes:
+            val = all_mode_stats[mode].get(key, 0)
             if key in ('avg_reliability', 'satisfaction_rate'):
-                line += f" {val*100:<14.1f}%"
+                line += f" {val*100:<19.1f}%"
             else:
-                line += f" {val:<15.2f}"
-        
+                line += f" {val:<20.2f}"
         print(line)
     
-    # Print improvement vs uncompressed
-    if uncomp_stats:
-        dynamic_stats = mode_stats.get('ml-dynamic', {})
-        if dynamic_stats:
-            print(f"\n{'ML-Dynamic vs Uncompressed':}")
-            print("-" * 70)
-            
-            r = uncomp_stats
-            m = dynamic_stats
-            
-            # For MSE, dynamic will likely be higher (worse) since it compresses more
-            # but that's the expected trade-off for better delivery
-            mse_diff = m['avg_mse'] - r['avg_mse']
-            delay_imp = (r['avg_delay'] - m['avg_delay']) / r['avg_delay'] * 100 if r['avg_delay'] > 0 else 0
-            rel_imp = (m['avg_reliability'] - r['avg_reliability']) / r['avg_reliability'] * 100 if r['avg_reliability'] > 0 else 0
-            sat_diff = (m['satisfaction_rate'] - r['satisfaction_rate']) * 100
-            
-            print(f"  MSE trade-off:  {mse_diff:+.1f} ({'higher' if mse_diff > 0 else 'lower'} — compression trade-off)")
-            print(f"  Delay:          {delay_imp:+.1f}% {'(better)' if delay_imp > 0 else '(worse)'}")
-            print(f"  Reliability:    {rel_imp:+.1f}% {'(better)' if rel_imp > 0 else '(worse)'}")
-            print(f"  Satisfaction:   {sat_diff:+.1f}pp")
+    # ---- Print ML-Dynamic vs Best Fixed (the FAIR comparison) ----
+    if best_fixed_stats and 'ml-dynamic' in all_mode_stats:
+        dynamic_stats = all_mode_stats['ml-dynamic']
+        print(f"\n{'='*80}")
+        print(f"ML-Dynamic vs Best Fixed (components={best_fixed_level}) — FAIR COMPARISON")
+        print(f"{'='*80}")
+        
+        b = best_fixed_stats
+        m = dynamic_stats
+        
+        mse_imp = (b['avg_mse'] - m['avg_mse']) / b['avg_mse'] * 100 if b['avg_mse'] > 0 else 0
+        delay_imp = (b['avg_delay'] - m['avg_delay']) / b['avg_delay'] * 100 if b['avg_delay'] > 0 else 0
+        rel_imp = (m['avg_reliability'] - b['avg_reliability']) / b['avg_reliability'] * 100 if b['avg_reliability'] > 0 else 0
+        sat_diff = (m['satisfaction_rate'] - b['satisfaction_rate']) * 100
+        
+        print(f"  MSE:            {mse_imp:+.1f}% {'(better)' if mse_imp > 0 else '(worse)'}")
+        print(f"  Delay:          {delay_imp:+.1f}% {'(better)' if delay_imp > 0 else '(worse)'}")
+        print(f"  Reliability:    {rel_imp:+.1f}% {'(better)' if rel_imp > 0 else '(worse)'}")
+        print(f"  Satisfaction:   {sat_diff:+.1f}pp")
+        
+        if mse_imp > 0:
+            print(f"\n  ✓ ML-Dynamic achieves {mse_imp:.1f}% lower MSE than the best fixed level.")
+            print(f"    Per-frame adaptation provides meaningful improvement over static compression.")
+        else:
+            print(f"\n  ✗ Best fixed level (components={best_fixed_level}) achieves lower MSE.")
+            print(f"    The ML model may need further tuning to beat the best naive strategy.")
     
-    print(f"{'='*70}")
+    # ---- Print ML-Dynamic vs Uncompressed (motivation) ----
+    if 'uncompressed' in all_mode_stats and 'ml-dynamic' in all_mode_stats:
+        uncomp_stats = all_mode_stats['uncompressed']
+        dynamic_stats = all_mode_stats['ml-dynamic']
+        print(f"\nML-Dynamic vs Uncompressed — MOTIVATION (why compression is needed)")
+        print("-" * 80)
+        
+        r = uncomp_stats
+        m = dynamic_stats
+        
+        mse_imp = (r['avg_mse'] - m['avg_mse']) / r['avg_mse'] * 100 if r['avg_mse'] > 0 else 0
+        delay_imp = (r['avg_delay'] - m['avg_delay']) / r['avg_delay'] * 100 if r['avg_delay'] > 0 else 0
+        
+        print(f"  MSE:            {mse_imp:+.1f}% {'(better)' if mse_imp > 0 else '(worse)'}")
+        print(f"  Delay:          {delay_imp:+.1f}% {'(better)' if delay_imp > 0 else '(worse)'}")
+        print(f"  (Uncompressed frames mostly exceed deadlines → penalty MSE = max MSE at 5 components)")
+    
+    print(f"{'='*80}")
 
 
 def quick_test():
-    """Run a quick test with both modes."""
-    print("=== Quick Test Mode (Uncompressed vs ML-Dynamic) ===")
+    """Run a quick test with all three modes."""
+    print("=== Quick Test Mode (Uncompressed vs Fixed-Static vs ML-Dynamic) ===")
     
     # Test model server connection
     try:
@@ -789,23 +884,43 @@ def quick_test():
     for i in range(num_users):
         print(f"  User {i}: fps={fps_rates[i]}, traffic={traffic_profiles[i]['file']}")
     
+    all_results = []
+    
     # ---- Test 1: Uncompressed mode ----
     print(f"\n{'='*50}")
     print("Testing UNCOMPRESSED mode (components=80)...")
     compression_levels = [MAX_COMPRESSION] * num_users
-    print(f"  Compression levels: {compression_levels}")
     
     result = run_simulation(num_users, compression_levels, fps_rates, traffic_profiles,
                            run_id=999, mode="uncompressed")
     if result and result.get('success'):
         print(f"  Success! {len(result.get('user_results', []))} user results")
         for ur in result.get('user_results', []):
-            print(f"    User {ur['user_id']}: CQI={ur['avg_cqi']:.2f}, FPS={ur.get('fps', 60)}, "
-                  f"reliability={ur['delay_reliability']*100:.1f}%, MSE={ur['avg_mse']:.1f}")
+            all_results.append({'mode': 'uncompressed', **ur})
+            print(f"    User {ur['user_id']}: MSE={ur['avg_mse']:.1f}, "
+                  f"reliability={ur['delay_reliability']*100:.1f}%")
     else:
         print("  Failed!")
     
-    # ---- Test 2: ML-Dynamic mode (per-frame) ----
+    # ---- Test 2: Fixed-Static (test a few levels) ----
+    test_fixed_levels = [20, 40, 60]
+    print(f"\n{'='*50}")
+    print(f"Testing FIXED-STATIC modes (components={test_fixed_levels})...")
+    for fixed_level in test_fixed_levels:
+        compression_levels = [fixed_level] * num_users
+        mode_name = f"fixed-static-{fixed_level}"
+        result = run_simulation(num_users, compression_levels, fps_rates, traffic_profiles,
+                               run_id=900 + fixed_level, mode=mode_name)
+        if result and result.get('success'):
+            mse_vals = [ur['avg_mse'] for ur in result.get('user_results', [])]
+            avg_mse = sum(mse_vals) / len(mse_vals) if mse_vals else 0
+            for ur in result.get('user_results', []):
+                all_results.append({'mode': mode_name, **ur})
+            print(f"  components={fixed_level}: Avg MSE={avg_mse:.1f}")
+        else:
+            print(f"  components={fixed_level}: FAILED")
+    
+    # ---- Test 3: ML-Dynamic mode (per-frame) ----
     if model_available:
         print(f"\n{'='*50}")
         print("Testing ML-DYNAMIC mode (per-frame compression)...")
@@ -841,18 +956,23 @@ def quick_test():
         if result and result.get('success'):
             print(f"  Success! {len(result.get('user_results', []))} user results")
             for ur in result.get('user_results', []):
-                print(f"    User {ur['user_id']}: CQI={ur['avg_cqi']:.2f}, FPS={ur.get('fps', 60)}, "
-                      f"reliability={ur['delay_reliability']*100:.1f}%, MSE={ur['avg_mse']:.1f}")
+                all_results.append({'mode': 'ml-dynamic', **ur})
+                print(f"    User {ur['user_id']}: MSE={ur['avg_mse']:.1f}, "
+                      f"reliability={ur['delay_reliability']*100:.1f}%")
         else:
             print("  Failed!")
     else:
         print(f"\n{'='*50}")
         print("Skipping ML-DYNAMIC test (dynamic model not loaded)")
         print("  Train with: python3 train_dynamic_model.py")
+    
+    # Print summary if we have results
+    if all_results:
+        print_summary(all_results)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run comparison study: Uncompressed vs ML-Dynamic compression")
+    parser = argparse.ArgumentParser(description="Run comparison study: Uncompressed vs Fixed-Static vs ML-Dynamic compression")
     parser.add_argument("--runs", type=int, default=DEFAULT_RUNS,
                        help=f"Number of runs per user count per mode (default: {DEFAULT_RUNS})")
     parser.add_argument("--seed", type=int, default=42,

@@ -1,26 +1,37 @@
-# ML-Dynamic vs Uncompressed: Comparison Study
+# ML-Dynamic vs Fixed-Static vs Uncompressed: Comparison Study
 
 > **Study Date**: February 11, 2026  
-> **Methodology**: Two-Phase Simulation — Uncompressed Baseline vs Per-Frame Dynamic Compression
+> **Methodology**: Three-Way Simulation — Uncompressed (Motivation) vs Fixed-Static (Fair Baseline) vs ML-Dynamic (Our Method)
 
 ## Overview
 
-This study compares two compression strategies for XR traffic in 5G NR networks:
+This study compares three compression strategies for XR traffic in 5G NR networks:
 
-1. **Uncompressed (Baseline)** — All frames use `components=80` (maximum quality, least compression). This represents the "uncompressed-equivalent" scenario where frames are at their largest possible size.
-2. **ML-Dynamic (Per-Frame)** — Uses a trained XGBoost model to predict per-frame compression levels based on:
+1. **Uncompressed (Motivation)** — All frames use `components=80` (maximum quality, least compression). Demonstrates **why compression is needed**: large frames overwhelm the network and miss deadlines, resulting in penalty MSE = max MSE at 5 components for most frames.
+2. **Fixed-Static (Fair Baseline)** — All frames use a single fixed compression level. We sweep levels [10, 20, 30, 40, 50, 60, 70] and pick the one with the **lowest average MSE**. This is the strongest naive baseline — if ML can't beat this, the model isn't useful.
+3. **ML-Dynamic (Our Method)** — Uses a trained XGBoost model to predict per-frame compression levels based on:
    - **Number of users** in the cell
    - **Actual per-user CQI values** collected from a warmup simulation
    - **Frame rate (FPS)** — 60, 72, 90, or 120 fps
    - **Frame complexity** — size at `components=80`, reflecting inherent frame difficulty
 
-### Why Compare Against Uncompressed?
+### Why Three Baselines?
 
-The "uncompressed" baseline (`components=80`) represents the **best possible quality** — frames retain maximum detail with minimal compression artifacts. However, these large frames are harder to deliver on time, especially under congested network conditions.
+| Baseline | Purpose | What It Answers |
+|---|---|---|
+| **Uncompressed** | Motivation | "Why is compression needed at all?" |
+| **Best Fixed-Static** | Fair comparison | "Does per-frame ML beat the best naive fixed strategy?" |
+| **ML-Dynamic** | Our contribution | "Does intelligent adaptation add value?" |
 
-The ML-Dynamic model intelligently compresses frames based on their complexity and network conditions, trading some quality for **significantly better delivery reliability**. This comparison directly measures:
-- **How much quality do we sacrifice** by using dynamic compression?
-- **How much reliability do we gain** by adapting frame sizes to network conditions?
+The **uncompressed** baseline alone is a straw-man — it's so bad that any compression looks good. The **best fixed-static** is the real test: it forces the ML model to prove that its per-frame decisions are better than simply picking one good compression level for all frames.
+
+### QoE Metric: MSE with Deadline Penalty
+
+The comparison uses a unified MSE metric from `XRTrafficReceiver.cc`:
+- **On-time frames**: MSE = actual PCA reconstruction error
+- **Late/lost frames**: MSE = **max MSE at 5 components** (penalty, auto-computed from PCA CSV)
+
+This means MSE already captures both quality degradation (from compression) and delivery failure (from missed deadlines). The **best** strategy minimizes this combined metric.
 
 ## Methodology
 
@@ -28,14 +39,16 @@ The ML-Dynamic model intelligently compresses frames based on their complexity a
 
 1. **Phase 1 (Warmup)**: Run a 50-frame simulation with mid-level compression to collect real per-user CQI values
 2. **Phase 2 (Evaluation)**: 
-   - **Uncompressed**: All frames use `components=80` — no compression decisions needed
-   - **ML-Dynamic**: Query model per-frame with user's CQI, FPS, and frame complexity, then generate adaptive PCA CSVs where each frame has a different compression level
+   - **Uncompressed**: All frames use `components=80`
+   - **Fixed-Static**: All frames use a single fixed `components` value (swept across levels)
+   - **ML-Dynamic**: Query model per-frame with user's CQI, FPS, and frame complexity
 
 ### Setup
 
 - **Simulation Framework**: Simu5G (OMNeT++)
 - **User Range**: 2-10 concurrent XR users
 - **Compression Levels**: 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80
+- **Fixed-Static Sweep**: 10, 20, 30, 40, 50, 60, 70
 - **FPS Rates**: 60, 72, 90, 120 fps (randomly assigned per user)
 - **Traffic Profiles**: 5 profiles with varying mean frame sizes (45KB, 65KB, 80KB, 95KB, 120KB)
 - **ML Model**: XGBoost regressor (dynamic per-frame model)
@@ -72,36 +85,48 @@ The dynamic model uses this information to make per-frame compression decisions:
    python3 simulations/NR/xr/run_comparison.py --runs 3
    ```
 
-3. For each ML-dynamic evaluation, the script:
-   - Runs warmup to collect actual per-user CQI values
-   - Queries model with real CQI and per-frame complexity for adaptive compression
-   - Generates custom PCA CSVs where each frame row has a different `components` value
-   - Runs full simulation with these per-frame compressed files
+3. The script automatically:
+   - Runs **uncompressed** simulations (all frames at components=80)
+   - Runs **fixed-static** simulations for each level in [10, 20, 30, 40, 50, 60, 70]
+   - Runs **ML-dynamic** simulations (warmup → CQI collection → per-frame model queries)
+   - Identifies the **best fixed level** (lowest MSE) and compares ML-Dynamic against it
 
 ---
 
 ## Expected Results
 
-| Metric              | Uncompressed | ML-Dynamic | Trade-off |
-| ------------------- | ------------ | ---------- | --------- |
-| **Avg MSE**         | ~0 (best)    | Higher     | Quality cost of compression |
-| **Avg Delay (ms)**  | Higher       | Lower      | Smaller frames → faster delivery |
-| **Avg Reliability** | Lower        | Higher     | More frames meet deadline |
-| **Satisfaction Rate** | Lower      | Higher     | More users achieve 99% reliability |
+### Fixed-Static Sweep
+
+| Level | Expected Behavior |
+|---|---|
+| **Low (10-20)** | Small frames → good delivery, but high compression MSE |
+| **Mid (30-50)** | Balance of quality and delivery — likely best fixed level |
+| **High (60-70)** | Better quality but larger frames → more deadline violations |
+| **80 (Uncompressed)** | Best quality but worst delivery → dominated by penalty MSE |
+
+### 3-Way Summary
+
+| Metric              | Uncompressed | Best Fixed | ML-Dynamic |
+| ------------------- | ------------ | ---------- | ---------- |
+| **Avg MSE**         | ~penalty (late-dominated) | Lower (balanced) | Lowest (adaptive) |
+| **Avg Delay (ms)**  | Very high    | Moderate   | Lowest     |
+| **Avg Reliability** | Very low (~8%) | Moderate | Highest    |
 
 > [!IMPORTANT]
-> Lower MSE and Delay are better. Higher Reliability and Satisfaction are better.  
-> The key insight: Uncompressed has perfect quality but poor delivery; ML-Dynamic trades some quality for much better reliability.
+> The **key comparison** is ML-Dynamic vs Best Fixed. If ML-Dynamic achieves lower MSE,
+> it proves that per-frame adaptation adds value over the best naive fixed strategy.
 
 ---
 
 ## Key Insights
 
-1. **Quality vs Delivery Trade-off**: The uncompressed baseline achieves the best possible MSE (near zero) but struggles with delivery reliability because the large frame sizes cause more deadline violations under network congestion.
+1. **Uncompressed is a Straw-Man**: With penalty MSE for late frames set to the max MSE at 5 components, the uncompressed scenario's "perfect quality" is irrelevant — almost all frames miss deadlines. This motivates compression but doesn't provide a fair benchmark.
 
-2. **Adaptive Compression**: The ML-Dynamic model identifies large, complex frames that would likely miss deadlines and compresses them more aggressively, while keeping smaller frames at higher quality. This per-frame adaptation is more effective than applying uniform compression.
+2. **Best Fixed-Static is the Real Test**: The best fixed compression level represents the strongest naive strategy. It already provides a good quality-delivery trade-off without any intelligence. ML-Dynamic must beat this to justify its complexity.
 
-3. **Network-Aware Decisions**: By incorporating CQI (channel quality) and user count, the model adjusts compression based on actual network conditions — more compression when the network is congested, less when conditions are favorable.
+3. **Per-Frame Adaptation**: The ML-Dynamic model identifies frames that would miss deadlines and compresses them more aggressively, while keeping simpler frames at higher quality. This frame-level granularity is what gives it an edge over fixed compression.
+
+4. **Network-Aware Decisions**: By incorporating CQI (channel quality) and user count, the model adjusts compression based on actual network conditions — more compression when the network is congested, less when conditions are favorable.
 
 ---
 
@@ -111,7 +136,7 @@ The dynamic model uses this information to make per-frame compression decisions:
 | ------------------------------------- | ------------------------------------------------ |
 | `comparison_results/comparison_*.csv` | Raw per-user results for analysis                |
 | `model_server.py`                     | FastAPI server hosting the dynamic ML model      |
-| `run_comparison.py`                   | Comparison study: Uncompressed vs ML-Dynamic     |
+| `run_comparison.py`                   | 3-way comparison: Uncompressed vs Fixed vs ML    |
 | `train_dynamic_model.py`              | Dynamic per-frame model training script          |
 | `compression_model_dynamic.joblib`    | Trained dynamic XGBoost model                    |
 
@@ -119,9 +144,10 @@ The dynamic model uses this information to make per-frame compression decisions:
 
 ## Conclusion
 
-The comparison between uncompressed transmission and ML-guided dynamic compression demonstrates the fundamental **quality-reliability trade-off** in XR video delivery over 5G NR:
+The three-way comparison provides a rigorous evaluation:
 
-- **Uncompressed** provides the best quality but unreliable delivery under network load
-- **ML-Dynamic** sacrifices some quality to achieve significantly better reliability
+- **Uncompressed** (motivation): Shows that raw transmission is infeasible — nearly all frames miss deadlines
+- **Best Fixed-Static** (fair baseline): The strongest naive strategy — picks one compression level that balances quality and delivery
+- **ML-Dynamic** (our method): Per-frame adaptive compression that leverages network conditions and frame complexity
 
-The dynamic per-frame approach is particularly effective because it makes **frame-level decisions** — compressing only the frames that need it, while preserving quality on simpler frames that can be delivered on time without compression.
+The fair comparison against the best fixed level answers the real question: **does ML-driven per-frame adaptation outperform the best simple strategy?**

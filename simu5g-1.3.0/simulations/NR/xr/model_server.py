@@ -25,7 +25,7 @@ import uvicorn
 import joblib
 
 # Configuration
-DYNAMIC_MODEL_PATH = Path(__file__).parent / "compression_model_dynamic.joblib"
+DYNAMIC_MODEL_PATH = Path(__file__).parent / "models" / "compression_model_dynamic.joblib"
 VALID_COMPRESSION_LEVELS = np.array([5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80])
 
 # Feature columns expected by the dynamic model

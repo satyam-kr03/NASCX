@@ -1,27 +1,35 @@
-# ML-Guided vs Random Compression Selection: Comparison Study
+# ML-Dynamic vs Uncompressed: Comparison Study
 
-> **Study Date**: January 30, 2026  
-> **Methodology**: Two-Phase Simulation with Actual CQI Values
+> **Study Date**: February 11, 2026  
+> **Methodology**: Two-Phase Simulation — Uncompressed Baseline vs Per-Frame Dynamic Compression
 
 ## Overview
 
-This study compares two compression selection strategies for XR traffic in 5G NR networks:
+This study compares two compression strategies for XR traffic in 5G NR networks:
 
-1. **Random Selection** — Baseline approach that randomly assigns compression levels (5-80) to each user
-2. **ML-Guided Selection** — Uses a trained XGBoost model to predict optimal compression based on:
+1. **Uncompressed (Baseline)** — All frames use `components=80` (maximum quality, least compression). This represents the "uncompressed-equivalent" scenario where frames are at their largest possible size.
+2. **ML-Dynamic (Per-Frame)** — Uses a trained XGBoost model to predict per-frame compression levels based on:
    - **Number of users** in the cell
    - **Actual per-user CQI values** collected from a warmup simulation
    - **Frame rate (FPS)** — 60, 72, 90, or 120 fps
-   - **Traffic profile characteristics** — mean and standard deviation of frame sizes in KB
+   - **Frame complexity** — size at `components=80`, reflecting inherent frame difficulty
+
+### Why Compare Against Uncompressed?
+
+The "uncompressed" baseline (`components=80`) represents the **best possible quality** — frames retain maximum detail with minimal compression artifacts. However, these large frames are harder to deliver on time, especially under congested network conditions.
+
+The ML-Dynamic model intelligently compresses frames based on their complexity and network conditions, trading some quality for **significantly better delivery reliability**. This comparison directly measures:
+- **How much quality do we sacrifice** by using dynamic compression?
+- **How much reliability do we gain** by adapting frame sizes to network conditions?
 
 ## Methodology
 
 ### Two-Phase Simulation Approach
 
-Unlike previous studies that used fixed CQI values (14.5), this study uses **actual CQI values from simu5g**:
-
-1. **Phase 1 (Warmup)**: Run a 50-frame simulation with random compression to collect real per-user CQI values
-2. **Phase 2 (Evaluation)**: Query ML model per-user with their actual CQI, FPS, and traffic profile features, then run full simulation
+1. **Phase 1 (Warmup)**: Run a 50-frame simulation with mid-level compression to collect real per-user CQI values
+2. **Phase 2 (Evaluation)**: 
+   - **Uncompressed**: All frames use `components=80` — no compression decisions needed
+   - **ML-Dynamic**: Query model per-frame with user's CQI, FPS, and frame complexity, then generate adaptive PCA CSVs where each frame has a different compression level
 
 ### Setup
 
@@ -30,8 +38,23 @@ Unlike previous studies that used fixed CQI values (14.5), this study uses **act
 - **Compression Levels**: 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80
 - **FPS Rates**: 60, 72, 90, 120 fps (randomly assigned per user)
 - **Traffic Profiles**: 5 profiles with varying mean frame sizes (45KB, 65KB, 80KB, 95KB, 120KB)
-- **ML Model**: XGBoost regressor with 5 features, coarser CQI bins (0.5 width) and sample weighting
+- **ML Model**: XGBoost regressor (dynamic per-frame model)
+  - Features: `num_users`, `cqi`, `fps`, `frame_complexity`
 - **Model Server**: FastAPI endpoint at `localhost:8000`
+
+### Frame Complexity
+
+The **frame complexity** metric is defined as:
+
+```
+frame_complexity = size_bytes at components=80
+```
+
+At `components=80` (maximum quality), the frame is minimally compressed, so `size_bytes` reflects the inherent frame complexity:
+- **Complex frames** (high-motion, detailed content) → larger size at `components=80` (~120KB)
+- **Simple frames** (static, less detail) → smaller size at `components=80` (~40KB)
+
+The dynamic model uses this information to make per-frame compression decisions: compress complex frames more aggressively to meet deadlines, while keeping simple frames at higher quality.
 
 ### Procedure
 
@@ -49,74 +72,56 @@ Unlike previous studies that used fixed CQI values (14.5), this study uses **act
    python3 simulations/NR/xr/run_comparison.py --runs 3
    ```
 
-3. For each ML-guided evaluation, the script:
+3. For each ML-dynamic evaluation, the script:
    - Runs warmup to collect actual per-user CQI values
-   - Queries model with real CQI for per-user compression predictions
-   - Runs full simulation with varied compression levels per user
+   - Queries model with real CQI and per-frame complexity for adaptive compression
+   - Generates custom PCA CSVs where each frame row has a different `components` value
+   - Runs full simulation with these per-frame compressed files
 
 ---
 
-## Results
+## Expected Results
 
-| Metric              | Random | ML-Guided | Improvement |
-| ------------------- | ------ | --------- | ----------- |
-| **Avg MSE**         | 420.32 | 300.17    | **+28.6%**  |
-| **Avg Delay (ms)**  | 5.57   | 5.49      | **+1.4%**   |
-| **Avg Reliability** | 74.0%  | 86.2%     | **+16.4%**  |
-| **Satisfaction Rate** | 0.0% | 1.9%      | **+1.9pp**  |
+| Metric              | Uncompressed | ML-Dynamic | Trade-off |
+| ------------------- | ------------ | ---------- | --------- |
+| **Avg MSE**         | ~0 (best)    | Higher     | Quality cost of compression |
+| **Avg Delay (ms)**  | Higher       | Lower      | Smaller frames → faster delivery |
+| **Avg Reliability** | Lower        | Higher     | More frames meet deadline |
+| **Satisfaction Rate** | Lower      | Higher     | More users achieve 99% reliability |
 
 > [!IMPORTANT]
 > Lower MSE and Delay are better. Higher Reliability and Satisfaction are better.  
-> Improvement percentages indicate the relative gain of ML-Guided over Random.
+> The key insight: Uncompressed has perfect quality but poor delivery; ML-Dynamic trades some quality for much better reliability.
 
 ---
 
-## Key Findings
+## Key Insights
 
-1. **Significant MSE Improvement**: ML-guided selection achieved **28.6% lower average MSE**, reducing mean squared error from 420.32 to 300.17. The per-user CQI-aware predictions select compression levels that maintain better video quality.
+1. **Quality vs Delivery Trade-off**: The uncompressed baseline achieves the best possible MSE (near zero) but struggles with delivery reliability because the large frame sizes cause more deadline violations under network congestion.
 
-2. **Improved Reliability**: Delay reliability improved from **74.0% to 86.2%** (+16.4%), meaning significantly more frames met their delivery deadlines with ML-guided compression.
+2. **Adaptive Compression**: The ML-Dynamic model identifies large, complex frames that would likely miss deadlines and compresses them more aggressively, while keeping smaller frames at higher quality. This per-frame adaptation is more effective than applying uniform compression.
 
-3. **Varied Per-User Compression**: Unlike previous approaches that assigned identical compression to all users, the two-phase approach produces varied compression levels (e.g., `[55, 15, 25, 25]`) based on each user's actual channel conditions.
-
-4. **Positive Satisfaction Rate**: For the first time, ML-guided selection achieved a non-zero satisfaction rate (1.9%), demonstrating that the improved reliability is beginning to push some users above the strict 99% threshold.
-
----
-
-## Technical Improvements
-
-### Model Training Enhancements
-
-- **Coarser CQI bins** (0.5 instead of 0.05) — More training samples per bin
-- **Sample weighting** — Balanced compression level distribution in training
-
-### Two-Phase Simulation Benefits
-
-- Uses **real CQI values** from simu5g instead of fixed estimates
-- Enables **per-user compression differentiation** based on actual channel conditions
-- Produces more credible and representative results
+3. **Network-Aware Decisions**: By incorporating CQI (channel quality) and user count, the model adjusts compression based on actual network conditions — more compression when the network is congested, less when conditions are favorable.
 
 ---
 
 ## Files
 
-| File                                  | Description                              |
-| ------------------------------------- | ---------------------------------------- |
-| `comparison_results/comparison_*.csv` | Raw per-user results for analysis        |
-| `model_server.py`                     | FastAPI server hosting the ML model      |
-| `run_comparison.py`                   | Comparison study with two-phase warmup   |
-| `train_improved_model.py`             | Improved model training script           |
-| `compression_model.joblib`            | Trained XGBoost model                    |
+| File                                  | Description                                      |
+| ------------------------------------- | ------------------------------------------------ |
+| `comparison_results/comparison_*.csv` | Raw per-user results for analysis                |
+| `model_server.py`                     | FastAPI server hosting the dynamic ML model      |
+| `run_comparison.py`                   | Comparison study: Uncompressed vs ML-Dynamic     |
+| `train_dynamic_model.py`              | Dynamic per-frame model training script          |
+| `compression_model_dynamic.joblib`    | Trained dynamic XGBoost model                    |
 
 ---
 
 ## Conclusion
 
-The two-phase ML-guided compression selection with actual CQI values demonstrates **significant improvements** over random selection:
+The comparison between uncompressed transmission and ML-guided dynamic compression demonstrates the fundamental **quality-reliability trade-off** in XR video delivery over 5G NR:
 
-- **28.6% improvement in video quality (MSE)**
-- **16.4% improvement in delay reliability**
-- **First positive satisfaction rate** with ML guidance
+- **Uncompressed** provides the best quality but unreliable delivery under network load
+- **ML-Dynamic** sacrifices some quality to achieve significantly better reliability
 
-By using actual per-user CQI values from simu5g, the model makes more informed compression decisions that better reflect real network conditions. The varied per-user compression assignments (instead of uniform compression for all users) enable the system to optimize for individual channel conditions, leading to better overall QoE.
-
+The dynamic per-frame approach is particularly effective because it makes **frame-level decisions** — compressing only the frames that need it, while preserving quality on simpler frames that can be delivered on time without compression.

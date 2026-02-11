@@ -1,31 +1,8 @@
-# Dataset Generation for Optimal Compression Selection
+# Dataset Generation for Dynamic Compression Model
 
 ## Overview
 
-This document describes the dataset generation framework for training ML models to predict optimal video compression levels based on network conditions. The dataset captures the relationship between CQI, number of users, compression level, FPS, traffic profile, and resulting QoE metrics.
-
----
-
-## Dataset Schema
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `run_id` | int | Unique simulation run identifier |
-| `num_users` | int | Total users in simulation (2-10) |
-| `user_id` | int | User index (0 to num_users-1) |
-| `fps` | int | Frame rate (60, 72, 90, 120) |
-| `compression_level` | int | PCA components (5, 10, 15, ..., 80) |
-| `size_mean_kb` | float | Mean frame size of traffic profile (KB) |
-| `size_min_kb` | float | Min frame size of traffic profile (KB) |
-| `size_max_kb` | float | Max frame size of traffic profile (KB) |
-| `size_std_kb` | float | Std dev of frame sizes (KB) |
-| `total_frames` | int | Expected frames (fps × sim-time) |
-| `on_time_frames` | int | Frames delivered within deadline |
-| `avg_delay_ms` | float | Average frame delay (ms) |
-| `delay_reliability` | float | Fraction of on-time frames (0-1) |
-| `user_satisfied` | int | 1 if reliability ≥ 99%, else 0 |
-| `avg_mse` | float | Mean Squared Error (QoE metric) |
-| `avg_cqi` | float | Average downlink CQI (1-15) |
+This document describes the dataset generation framework for training the per-frame dynamic compression model. The dataset captures the relationship between frame complexity, network conditions (CQI, number of users), compression level choices, and resulting delivery outcomes.
 
 ---
 
@@ -55,6 +32,34 @@ Expected frame count = `fps × sim-time` (default 20s).
 
 ---
 
+## Per-Frame Dataset Schema
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `run_id` | int | Unique simulation run identifier |
+| `num_users` | int | Total users in simulation (2-10) |
+| `user_id` | int | User index |
+| `fps` | int | Frame rate |
+| `avg_cqi` | float | Average CQI for this user |
+| `frame_number` | int | Frame index within the video |
+| `frame_complexity` | float | Frame size at max components (bytes) — inherent difficulty |
+| `compression_level` | int | PCA components assigned to this frame |
+| `compressed_size_bytes` | int | Actual frame size after compression |
+| `mse` | float | Reconstruction error for this frame |
+| `delay_ms` | float | End-to-end delay for this frame |
+| `received_on_time` | int | 1 if delivered within deadline, 0 otherwise |
+
+### Key Concept: Frame Complexity
+
+**Frame complexity** = the frame's size when using maximum components (80). At `components=80`, the frame is minimally compressed, so `size_bytes` reflects the inherent frame complexity:
+
+- **Complex frames** (high-motion, detailed content) → larger size at `components=80` (~120KB)
+- **Simple frames** (static, less detail) → smaller size at `components=80` (~40KB)
+
+The per-frame model learns: *"For a frame of complexity X, under network conditions (num_users, CQI), what compression level best balances quality (MSE) and deliverability (on-time rate)?"*
+
+---
+
 ## Usage
 
 ```bash
@@ -62,24 +67,22 @@ cd /home/teaching/Projects/NASCX
 ./opp_shell.sh
 cd simu5g-1.3.0/simulations/NR/xr
 
-# Generate traffic profiles first
-python3 generate_traffic_profiles.py
-
-# Quick test (3 users, 1 run)
-python3 generate_dataset.py --test
+# Quick test (3 users, per-frame compression)
+python3 generate_per_frame_dataset.py --test
 
 # Full dataset generation (parallel)
-python3 generate_dataset.py --runs 10 --workers 8
+python3 generate_per_frame_dataset.py --runs 5 -j 8
 ```
 
 ### Parameters
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--runs` | 10 | Number of runs per user count |
+| `--runs` | 5 | Runs per user count |
 | `--deadline` | 5.0 | Delay deadline in ms |
 | `--seed` | 42 | Random seed |
-| `--workers` | 16 | Parallel workers |
+| `--workers` / `-j` | auto | Parallel workers |
+| `--save-interval` | 5 | Checkpoint every N runs |
 | `--test` | - | Quick test with 3 users |
 
 ---
@@ -89,7 +92,21 @@ python3 generate_dataset.py --runs 10 --workers 8
 | File | Description |
 |------|-------------|
 | `generate_traffic_profiles.py` | Generates synthetic traffic CSV files |
-| `generate_dataset.py` | Runs simulations and generates dataset |
+| `generate_per_frame_dataset.py` | Runs simulations and generates per-frame dataset |
+| `train_dynamic_model.py` | Trains the dynamic per-frame XGBoost model |
 | `traffic_*.csv` | Traffic profiles (5 variants) |
-| `compression_dataset.csv` | Output dataset |
+| `per_frame_dataset.csv` | Per-frame dataset output |
+| `compression_model_dynamic.joblib` | Trained dynamic model |
 | `traffic_profiles_metadata.csv` | Traffic profile statistics |
+
+---
+
+## Pipeline
+
+```
+1. generate_traffic_profiles.py     → produces traffic_*.csv
+2. generate_per_frame_dataset.py    → produces per_frame_dataset.csv
+3. train_dynamic_model.py           → produces compression_model_dynamic.joblib
+4. model_server.py                  → serves /predict_per_frame endpoint
+5. run_comparison.py                → runs Uncompressed vs ML-Dynamic comparison
+```

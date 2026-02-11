@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Comparison Study: Random vs ML-Guided Compression Selection
+Comparison Study: ML-Dynamic vs Uncompressed
 
 This script runs simulations comparing:
-1. Random compression selection (baseline)
-2. ML-guided compression selection (using FastAPI model server)
+1. Uncompressed (baseline) — all frames use components=80 (maximum quality, least compression)
+2. ML-guided dynamic compression — per-frame adaptive compression levels
 
-The goal is to demonstrate that ML-guided selection achieves better QoE.
+The goal is to demonstrate that per-frame dynamic compression achieves
+better delivery reliability while maintaining acceptable quality compared
+to sending frames at full (uncompressed-equivalent) quality.
 
 Usage:
     # Start model server first:
@@ -33,6 +35,7 @@ import multiprocessing
 
 # Configuration
 COMPRESSION_LEVELS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80]
+MAX_COMPRESSION = 80  # "Uncompressed-equivalent" — maximum quality, least compression
 FPS_RATES = [60, 72, 90, 120]  # Supported frame rates
 USER_RANGE = range(2, 11)  # 2 to 10 users
 DEFAULT_RUNS = 10
@@ -135,41 +138,72 @@ def create_user_pca_file(user_id: int, compression_level: int,
     return output_file
 
 
-def query_model_server(num_users: int, avg_cqi: float = 14.5, 
-                       fps: int = 60, size_mean_kb: float = 65.0, 
-                       size_std_kb: float = 34.8) -> int:
-    """Query the FastAPI model server for optimal compression level.
+def create_adaptive_pca_file(user_id: int, frame_comp_map: Dict[int, int],
+                              data_by_level: Dict, output_dir: Path) -> Path:
+    """Create a PCA CSV where each frame has a DIFFERENT compression level.
+    
+    Args:
+        user_id: User index
+        frame_comp_map: Dict mapping frame_number -> compression_level
+        data_by_level: PCA sweep data grouped by compression level
+        output_dir: Directory for output files
+    """
+    output_file = output_dir / f"user_{user_id}_adaptive.csv"
+    
+    # Build fast lookup: (frame, components) -> row
+    frame_lookup = {}
+    for level, frames in data_by_level.items():
+        for f in frames:
+            frame_lookup[(f['frame'], level)] = f
+    
+    with open(output_file, 'w', newline='') as fout:
+        writer = csv.writer(fout)
+        writer.writerow(['frame', 'components', 'mse', 'size_bytes'])
+        
+        for frame_num in sorted(frame_comp_map.keys()):
+            comp = frame_comp_map[frame_num]
+            key = (frame_num, comp)
+            if key in frame_lookup:
+                row = frame_lookup[key]
+                writer.writerow([row['frame'], row['components'],
+                               row['mse'], row['size_bytes']])
+    
+    return output_file
+
+
+def query_per_frame_model(num_users: int, avg_cqi: float, fps: int,
+                           frame_complexities: List[float]) -> List[int]:
+    """Query the model server for per-frame compression levels.
     
     Args:
         num_users: Number of users in the cell
-        avg_cqi: Average Channel Quality Indicator
-        fps: Frame rate (60, 72, 90, 120)
-        size_mean_kb: Mean frame size in KB
-        size_std_kb: Standard deviation of frame size in KB
+        avg_cqi: Average CQI for this user
+        fps: Frame rate
+        frame_complexities: List of frame complexity values (size at max components)
     
     Returns:
-        Optimal compression level (5, 10, 15, ..., 80)
+        List of compression levels, one per frame
     """
     try:
         response = requests.post(
-            f"{MODEL_SERVER_URL}/predict",
+            f"{MODEL_SERVER_URL}/predict_per_frame",
             json={
-                "num_users": num_users, 
+                "num_users": num_users,
                 "avg_cqi": avg_cqi,
                 "fps": fps,
-                "size_mean_kb": size_mean_kb,
-                "size_std_kb": size_std_kb
+                "frame_complexities": frame_complexities
             },
-            timeout=5000
+            timeout=30000
         )
         if response.status_code == 200:
-            return response.json()["optimal_compression"]
+            return response.json()["per_frame_compression"]
         else:
-            print(f"  Model server error: {response.status_code}")
-            return random.choice(COMPRESSION_LEVELS)  # Fallback to random
+            print(f"  Per-frame model server error: {response.status_code} - {response.text}")
+            # Fallback: return random compression per frame
+            return [random.choice(COMPRESSION_LEVELS) for _ in frame_complexities]
     except requests.exceptions.RequestException as e:
-        print(f"  Model server connection error: {e}")
-        return random.choice(COMPRESSION_LEVELS)  # Fallback to random
+        print(f"  Per-frame model server connection error: {e}")
+        return [random.choice(COMPRESSION_LEVELS) for _ in frame_complexities]
 
 
 def run_cqi_warmup(num_users: int, fps_rates: List[int], traffic_profiles: List[Dict],
@@ -192,15 +226,15 @@ def run_cqi_warmup(num_users: int, fps_rates: List[int], traffic_profiles: List[
     run_dir = SIMULATION_DIR / f"warmup_{num_users}_{seed}"
     run_dir.mkdir(exist_ok=True)
     
-    # Use random compression for warmup
-    compression_levels = [random.choice(COMPRESSION_LEVELS) for _ in range(num_users)]
+    # Use mid-level compression for warmup (less biased than random)
+    warmup_comp = 40
     
     # Generate per-user PCA files using their traffic profiles
     user_files = []
-    for i, comp_level in enumerate(compression_levels):
+    for i in range(num_users):
         traffic_file = SIMULATION_DIR / traffic_profiles[i]['file']
         data_by_level = load_pca_data(traffic_file)
-        user_file = create_user_pca_file(i, comp_level, data_by_level, run_dir)
+        user_file = create_user_pca_file(i, warmup_comp, data_by_level, run_dir)
         user_files.append(user_file)
     
     # Build simulation command with reduced frame count
@@ -271,75 +305,94 @@ def run_cqi_warmup(num_users: int, fps_rates: List[int], traffic_profiles: List[
     return user_cqis
 
 
-def get_compression_levels(mode: str, num_users: int, seed: int,
-                           fps_rates: List[int], traffic_profiles: List[Dict],
-                           user_cqis: Optional[Dict[int, float]] = None) -> List[int]:
-    """Get compression levels based on selection mode.
+def get_dynamic_compression(num_users: int, fps_rates: List[int],
+                             traffic_profiles: List[Dict],
+                             user_cqis: Dict[int, float]) -> Dict[int, Dict[int, int]]:
+    """Get per-frame compression levels for each user (ml-dynamic mode).
     
     Args:
-        mode: 'random' or 'ml'
         num_users: Number of users
-        seed: Random seed
-        fps_rates: List of FPS values per user
-        traffic_profiles: List of traffic profile dicts per user
-        user_cqis: Optional dict of per-user CQI values (for ML mode with actual CQI)
-    """
-    random.seed(seed)
+        fps_rates: FPS per user
+        traffic_profiles: Traffic profile per user
+        user_cqis: Per-user CQI values from warmup
     
-    if mode == "random":
-        # Random selection for each user
-        return [random.choice(COMPRESSION_LEVELS) for _ in range(num_users)]
-    elif mode == "ml":
-        # ML-guided: per-user compression based on their actual CQI, FPS, and traffic profile
-        compressions = []
-        for user_id in range(num_users):
-            if user_cqis and user_id in user_cqis:
-                cqi = user_cqis[user_id]
-            else:
-                cqi = 14.0  # Default fallback
-            
-            fps = fps_rates[user_id]
-            profile = traffic_profiles[user_id]
-            
-            optimal = query_model_server(
-                num_users=num_users, 
-                avg_cqi=cqi,
-                fps=fps,
-                size_mean_kb=profile['mean_kb'],
-                size_std_kb=profile['std_kb']
-            )
-            compressions.append(optimal)
+    Returns:
+        Dict[user_id -> Dict[frame_number -> compression_level]]
+    """
+    per_user_frame_comps = {}
+    
+    for user_id in range(num_users):
+        cqi = user_cqis.get(user_id, 14.0)
+        fps = fps_rates[user_id]
+        profile = traffic_profiles[user_id]
         
-        return compressions
-    else:
-        raise ValueError(f"Unknown mode: {mode}")
+        # Load PCA sweep data for this user's traffic profile
+        traffic_file = SIMULATION_DIR / profile['file']
+        data_by_level = load_pca_data(traffic_file)
+        
+        # Get frame complexity = size_bytes at max components (80) for each frame
+        max_comp_frames = data_by_level[MAX_COMPRESSION]
+        expected_frames = fps * SIMULATION_TIME
+        max_comp_frames = max_comp_frames[:expected_frames]
+        
+        frame_complexities = [float(f['size_bytes']) for f in max_comp_frames]
+        frame_numbers = [f['frame'] for f in max_comp_frames]
+        
+        # Query the per-frame model in one batch
+        per_frame_comps = query_per_frame_model(
+            num_users=num_users,
+            avg_cqi=cqi,
+            fps=fps,
+            frame_complexities=frame_complexities
+        )
+        
+        # Map frame_number -> compression_level
+        frame_comp_map = {
+            frame_numbers[i]: per_frame_comps[i]
+            for i in range(len(frame_numbers))
+        }
+        per_user_frame_comps[user_id] = frame_comp_map
+    
+    return per_user_frame_comps
 
 
 def run_simulation(num_users: int, compression_levels: List[int],
                    fps_rates: List[int], traffic_profiles: List[Dict], 
-                   run_id: int, mode: str) -> Optional[Dict]:
+                   run_id: int, mode: str,
+                   per_user_frame_comps: Optional[Dict[int, Dict[int, int]]] = None) -> Optional[Dict]:
     """Run a single simulation and return results.
     
     Args:
         num_users: Number of users
-        compression_levels: List of compression levels per user
+        compression_levels: List of compression levels per user (for uncompressed mode)
         fps_rates: List of FPS values per user
         traffic_profiles: List of traffic profile dicts per user
         run_id: Run identifier
-        mode: 'random' or 'ml'
+        mode: 'uncompressed' or 'ml-dynamic'
+        per_user_frame_comps: For ml-dynamic mode, Dict[user_id -> Dict[frame_number -> compression_level]]
     """
     
     # Create temporary directory for this run
     run_dir = SIMULATION_DIR / f"run_{mode}_{run_id}"
     run_dir.mkdir(exist_ok=True)
     
-    # Generate per-user PCA files using their traffic profiles
+    # Generate per-user PCA files
     user_files = []
-    for i, comp_level in enumerate(compression_levels[:num_users]):
-        traffic_file = SIMULATION_DIR / traffic_profiles[i]['file']
-        data_by_level = load_pca_data(traffic_file)
-        user_file = create_user_pca_file(i, comp_level, data_by_level, run_dir)
-        user_files.append(user_file)
+    if mode == "ml-dynamic" and per_user_frame_comps:
+        # DYNAMIC: each frame can have a different compression level
+        for i in range(num_users):
+            traffic_file = SIMULATION_DIR / traffic_profiles[i]['file']
+            data_by_level = load_pca_data(traffic_file)
+            user_file = create_adaptive_pca_file(i, per_user_frame_comps[i],
+                                                  data_by_level, run_dir)
+            user_files.append(user_file)
+    else:
+        # UNCOMPRESSED: fixed compression level (80) per user
+        for i, comp_level in enumerate(compression_levels[:num_users]):
+            traffic_file = SIMULATION_DIR / traffic_profiles[i]['file']
+            data_by_level = load_pca_data(traffic_file)
+            user_file = create_user_pca_file(i, comp_level, data_by_level, run_dir)
+            user_files.append(user_file)
     
     # Build simulation command
     cmd = [
@@ -363,7 +416,12 @@ def run_simulation(num_users: int, compression_levels: List[int],
     
     cmd.append("omnetpp.ini")
     
-    print(f"  Mode={mode}, Users={num_users}, Compression={compression_levels[:num_users]}")
+    # Log compression info
+    if mode == "ml-dynamic" and per_user_frame_comps:
+        unique_counts = [len(set(per_user_frame_comps[i].values())) for i in range(num_users)]
+        print(f"  Mode={mode}, Users={num_users}, UniqueCompsPerUser={unique_counts}")
+    else:
+        print(f"  Mode={mode}, Users={num_users}, Compression={compression_levels[:num_users]}")
     
     try:
         result = subprocess.run(
@@ -470,7 +528,7 @@ def run_single_task(task: Dict) -> Optional[Dict]:
     """Worker function to run a single simulation task.
     
     This function is designed to be called by ProcessPoolExecutor.
-    For ML mode, runs a warmup simulation first to collect actual CQI values.
+    For ml-dynamic mode, runs a warmup simulation first to collect actual CQI values.
     """
     mode = task['mode']
     num_users = task['num_users']
@@ -479,18 +537,32 @@ def run_single_task(task: Dict) -> Optional[Dict]:
     fps_rates = task['fps_rates']
     traffic_profiles = task['traffic_profiles']
     
-    # For ML mode, run CQI warmup first
-    user_cqis = None
-    if mode == "ml":
-        print(f"  Running CQI warmup for {num_users} users...")
+    per_user_frame_comps = None
+    
+    if mode == "ml-dynamic":
+        # Run CQI warmup first, then get per-frame compression levels
+        print(f"  Running CQI warmup for {num_users} users (mode={mode})...")
         user_cqis = run_cqi_warmup(num_users, fps_rates, traffic_profiles, 
                                    warmup_frames=50, seed=run_seed)
+        
+        per_user_frame_comps = get_dynamic_compression(
+            num_users, fps_rates, traffic_profiles, user_cqis
+        )
+        # Create a summary compression_levels list for logging (use mode of per-frame comps)
+        compression_levels = []
+        for i in range(num_users):
+            comps = list(per_user_frame_comps[i].values())
+            from collections import Counter
+            most_common = Counter(comps).most_common(1)[0][0]
+            compression_levels.append(most_common)
+    elif mode == "uncompressed":
+        # Uncompressed: all users use components=80 (maximum quality)
+        compression_levels = [MAX_COMPRESSION] * num_users
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
     
-    compression_levels = get_compression_levels(mode, num_users, run_seed, 
-                                                fps_rates, traffic_profiles, 
-                                                user_cqis=user_cqis)
     result = run_simulation(num_users, compression_levels, fps_rates, traffic_profiles,
-                           run_id, mode)
+                           run_id, mode, per_user_frame_comps=per_user_frame_comps)
     
     if result and result.get('success') and result.get('user_results'):
         rows = []
@@ -519,22 +591,22 @@ def run_comparison_study(num_runs: int = DEFAULT_RUNS, seed: int = 42):
     try:
         health = requests.get(f"{MODEL_SERVER_URL}/health", timeout=2000)
         if health.status_code != 200:
-            print("WARNING: Model server not healthy, ML mode will fallback to random")
+            print("WARNING: Model server not healthy, ml-dynamic mode will fail")
     except:
-        print("WARNING: Model server not running, ML mode will fallback to random")
+        print("WARNING: Model server not running, ml-dynamic mode will fail")
         print("         Start with: python3 model_server.py &")
     
     # Build list of all tasks to run
     tasks = []
     run_id = 0
-    for mode in ["random", "ml"]:
+    for mode in ["uncompressed", "ml-dynamic"]:
         for num_users in USER_RANGE:
             for run_idx in range(num_runs):
                 run_id += 1
-                run_seed = seed + run_id + (1000 if mode == "ml" else 0)
+                run_seed = seed + run_id + (2000 if mode == "ml-dynamic" else 0)
                 random.seed(run_seed)
                 
-                # Assign FPS and traffic profiles per user (same for both modes)
+                # Assign FPS and traffic profiles per user (same seed offset for both modes)
                 fps_rates = [random.choice(FPS_RATES) for _ in range(num_users)]
                 traffic_profiles = [random.choice(TRAFFIC_PROFILES) for _ in range(num_users)]
                 
@@ -569,13 +641,13 @@ def run_comparison_study(num_runs: int = DEFAULT_RUNS, seed: int = 42):
                 if result and result['success']:
                     all_results.extend(result['rows'])
                     completed += 1
-                    print(f"  [{completed + failed}/{total_tasks}] {task['mode']:6s} users={task['num_users']:2d} run={task['run_idx']+1}: OK ({len(result['rows'])} users)")
+                    print(f"  [{completed + failed}/{total_tasks}] {task['mode']:12s} users={task['num_users']:2d} run={task['run_idx']+1}: OK ({len(result['rows'])} users)")
                 else:
                     failed += 1
-                    print(f"  [{completed + failed}/{total_tasks}] {task['mode']:6s} users={task['num_users']:2d} run={task['run_idx']+1}: FAILED")
+                    print(f"  [{completed + failed}/{total_tasks}] {task['mode']:12s} users={task['num_users']:2d} run={task['run_idx']+1}: FAILED")
             except Exception as e:
                 failed += 1
-                print(f"  [{completed + failed}/{total_tasks}] {task['mode']:6s} users={task['num_users']:2d} run={task['run_idx']+1}: ERROR - {e}")
+                print(f"  [{completed + failed}/{total_tasks}] {task['mode']:12s} users={task['num_users']:2d} run={task['run_idx']+1}: ERROR - {e}")
     
     # Save results
     if all_results:
@@ -604,10 +676,10 @@ def run_comparison_study(num_runs: int = DEFAULT_RUNS, seed: int = 42):
 
 
 def print_summary(results: List[Dict]):
-    """Print summary comparison of random vs ML modes."""
+    """Print summary comparison of Uncompressed vs ML-Dynamic."""
     
-    random_results = [r for r in results if r['mode'] == 'random']
-    ml_results = [r for r in results if r['mode'] == 'ml']
+    modes = ['uncompressed', 'ml-dynamic']
+    mode_labels = {'uncompressed': 'Uncompressed', 'ml-dynamic': 'ML-Dynamic'}
     
     def calc_stats(data):
         if not data:
@@ -625,45 +697,86 @@ def print_summary(results: List[Dict]):
             'satisfaction_rate': sum(satisfied) / len(satisfied) if satisfied else 0
         }
     
-    random_stats = calc_stats(random_results)
-    ml_stats = calc_stats(ml_results)
+    mode_stats = {}
+    for mode in modes:
+        mode_data = [r for r in results if r['mode'] == mode]
+        if mode_data:
+            mode_stats[mode] = calc_stats(mode_data)
     
-    print(f"\n{'='*50}")
+    print(f"\n{'='*70}")
     print("SUMMARY STATISTICS")
-    print(f"{'='*50}")
-    print(f"{'Metric':<25} {'Random':<15} {'ML-Guided':<15} {'Improvement':<15}")
+    print(f"{'='*70}")
+    
+    # Header
+    header = f"{'Metric':<25}"
+    for mode in modes:
+        if mode in mode_stats:
+            header += f" {mode_labels[mode]:<15}"
+    print(header)
     print("-" * 70)
     
-    if random_stats and ml_stats:
-        # MSE (lower is better)
-        mse_improvement = ((random_stats['avg_mse'] - ml_stats['avg_mse']) / random_stats['avg_mse'] * 100) if random_stats['avg_mse'] > 0 else 0
-        print(f"{'Avg MSE':<25} {random_stats['avg_mse']:<15.2f} {ml_stats['avg_mse']:<15.2f} {mse_improvement:+.1f}%")
-        
-        # Delay (lower is better)
-        delay_improvement = ((random_stats['avg_delay'] - ml_stats['avg_delay']) / random_stats['avg_delay'] * 100) if random_stats['avg_delay'] > 0 else 0
-        print(f"{'Avg Delay (ms)':<25} {random_stats['avg_delay']:<15.2f} {ml_stats['avg_delay']:<15.2f} {delay_improvement:+.1f}%")
-        
-        # Reliability (higher is better)
-        rel_improvement = ((ml_stats['avg_reliability'] - random_stats['avg_reliability']) / random_stats['avg_reliability'] * 100) if random_stats['avg_reliability'] > 0 else 0
-        print(f"{'Avg Reliability':<25} {random_stats['avg_reliability']*100:<14.1f}% {ml_stats['avg_reliability']*100:<14.1f}% {rel_improvement:+.1f}%")
-        
-        # Satisfaction rate (higher is better)
-        sat_improvement = ((ml_stats['satisfaction_rate'] - random_stats['satisfaction_rate']) / random_stats['satisfaction_rate'] * 100) if random_stats['satisfaction_rate'] > 0 else 0
-        print(f"{'Satisfaction Rate':<25} {random_stats['satisfaction_rate']*100:<14.1f}% {ml_stats['satisfaction_rate']*100:<14.1f}% {sat_improvement:+.1f}%")
+    uncomp_stats = mode_stats.get('uncompressed', {})
     
-    print(f"{'='*50}")
+    # Print each metric
+    metrics = [
+        ('Avg MSE', 'avg_mse', 'lower'),
+        ('Avg Delay (ms)', 'avg_delay', 'lower'),
+        ('Avg Reliability', 'avg_reliability', 'higher'),
+        ('Satisfaction Rate', 'satisfaction_rate', 'higher'),
+    ]
+    
+    for label, key, direction in metrics:
+        line = f"{label:<25}"
+        for mode in modes:
+            if mode not in mode_stats:
+                continue
+            val = mode_stats[mode].get(key, 0)
+            if key in ('avg_reliability', 'satisfaction_rate'):
+                line += f" {val*100:<14.1f}%"
+            else:
+                line += f" {val:<15.2f}"
+        
+        print(line)
+    
+    # Print improvement vs uncompressed
+    if uncomp_stats:
+        dynamic_stats = mode_stats.get('ml-dynamic', {})
+        if dynamic_stats:
+            print(f"\n{'ML-Dynamic vs Uncompressed':}")
+            print("-" * 70)
+            
+            r = uncomp_stats
+            m = dynamic_stats
+            
+            # For MSE, dynamic will likely be higher (worse) since it compresses more
+            # but that's the expected trade-off for better delivery
+            mse_diff = m['avg_mse'] - r['avg_mse']
+            delay_imp = (r['avg_delay'] - m['avg_delay']) / r['avg_delay'] * 100 if r['avg_delay'] > 0 else 0
+            rel_imp = (m['avg_reliability'] - r['avg_reliability']) / r['avg_reliability'] * 100 if r['avg_reliability'] > 0 else 0
+            sat_diff = (m['satisfaction_rate'] - r['satisfaction_rate']) * 100
+            
+            print(f"  MSE trade-off:  {mse_diff:+.1f} ({'higher' if mse_diff > 0 else 'lower'} — compression trade-off)")
+            print(f"  Delay:          {delay_imp:+.1f}% {'(better)' if delay_imp > 0 else '(worse)'}")
+            print(f"  Reliability:    {rel_imp:+.1f}% {'(better)' if rel_imp > 0 else '(worse)'}")
+            print(f"  Satisfaction:   {sat_diff:+.1f}pp")
+    
+    print(f"{'='*70}")
 
 
 def quick_test():
-    """Run a quick test with minimal simulations."""
-    print("=== Quick Test Mode ===")
+    """Run a quick test with both modes."""
+    print("=== Quick Test Mode (Uncompressed vs ML-Dynamic) ===")
     
     # Test model server connection
     try:
         health = requests.get(f"{MODEL_SERVER_URL}/health", timeout=2000)
-        print(f"Model server: {health.json()}")
+        health_data = health.json()
+        print(f"Model server: {health_data}")
+        model_available = health_data.get('model_loaded', False)
+        print(f"  Dynamic model available: {model_available}")
     except Exception as e:
         print(f"Model server not available: {e}")
+        model_available = False
     
     num_users = 4
     random.seed(42)
@@ -676,46 +789,70 @@ def quick_test():
     for i in range(num_users):
         print(f"  User {i}: fps={fps_rates[i]}, traffic={traffic_profiles[i]['file']}")
     
-    # Test random mode
-    print(f"\nTesting random mode...")
-    compression_levels = get_compression_levels("random", num_users, seed=42, 
-                                                fps_rates=fps_rates, 
-                                                traffic_profiles=traffic_profiles)
+    # ---- Test 1: Uncompressed mode ----
+    print(f"\n{'='*50}")
+    print("Testing UNCOMPRESSED mode (components=80)...")
+    compression_levels = [MAX_COMPRESSION] * num_users
     print(f"  Compression levels: {compression_levels}")
     
     result = run_simulation(num_users, compression_levels, fps_rates, traffic_profiles,
-                           run_id=999, mode="random")
-    if result and result.get('success'):
-        print(f"  Success! {len(result.get('user_results', []))} user results")
-    else:
-        print("  Failed!")
-    
-    # Test ML mode with CQI warmup
-    print(f"\nTesting ML mode with CQI warmup...")
-    print("  Running warmup to collect actual CQI values...")
-    user_cqis = run_cqi_warmup(num_users, fps_rates, traffic_profiles, 
-                               warmup_frames=30, seed=42)
-    print(f"  User CQIs: {user_cqis}")
-    
-    compression_levels = get_compression_levels("ml", num_users, seed=42, 
-                                                fps_rates=fps_rates, 
-                                                traffic_profiles=traffic_profiles,
-                                                user_cqis=user_cqis)
-    print(f"  ML Compression levels: {compression_levels}")
-    
-    result = run_simulation(num_users, compression_levels, fps_rates, traffic_profiles,
-                           run_id=998, mode="ml")
+                           run_id=999, mode="uncompressed")
     if result and result.get('success'):
         print(f"  Success! {len(result.get('user_results', []))} user results")
         for ur in result.get('user_results', []):
             print(f"    User {ur['user_id']}: CQI={ur['avg_cqi']:.2f}, FPS={ur.get('fps', 60)}, "
-                  f"Comp={ur['compression_level']}")
+                  f"reliability={ur['delay_reliability']*100:.1f}%, MSE={ur['avg_mse']:.1f}")
     else:
         print("  Failed!")
+    
+    # ---- Test 2: ML-Dynamic mode (per-frame) ----
+    if model_available:
+        print(f"\n{'='*50}")
+        print("Testing ML-DYNAMIC mode (per-frame compression)...")
+        print("  Running warmup to collect actual CQI values...")
+        user_cqis = run_cqi_warmup(num_users, fps_rates, traffic_profiles, 
+                                   warmup_frames=30, seed=42)
+        print(f"  User CQIs: {user_cqis}")
+        
+        per_user_frame_comps = get_dynamic_compression(
+            num_users, fps_rates, traffic_profiles, user_cqis
+        )
+        
+        # Show per-user compression diversity
+        for i in range(num_users):
+            comps = list(per_user_frame_comps[i].values())
+            unique = len(set(comps))
+            from collections import Counter
+            top3 = Counter(comps).most_common(3)
+            print(f"  User {i}: {len(comps)} frames, {unique} unique compression levels, "
+                  f"top3={top3}")
+        
+        # Use mode of compressions as representative for logging
+        compression_levels_summary = []
+        for i in range(num_users):
+            from collections import Counter
+            comps = list(per_user_frame_comps[i].values())
+            most_common = Counter(comps).most_common(1)[0][0]
+            compression_levels_summary.append(most_common)
+        
+        result = run_simulation(num_users, compression_levels_summary, fps_rates, 
+                              traffic_profiles, run_id=998, mode="ml-dynamic",
+                              per_user_frame_comps=per_user_frame_comps)
+        if result and result.get('success'):
+            print(f"  Success! {len(result.get('user_results', []))} user results")
+            for ur in result.get('user_results', []):
+                print(f"    User {ur['user_id']}: CQI={ur['avg_cqi']:.2f}, FPS={ur.get('fps', 60)}, "
+                      f"reliability={ur['delay_reliability']*100:.1f}%, MSE={ur['avg_mse']:.1f}")
+        else:
+            print("  Failed!")
+    else:
+        print(f"\n{'='*50}")
+        print("Skipping ML-DYNAMIC test (dynamic model not loaded)")
+        print("  Train with: python3 train_dynamic_model.py")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run comparison study: Random vs ML-guided compression")
+    parser = argparse.ArgumentParser(description="Run comparison study: Uncompressed vs ML-Dynamic compression")
     parser.add_argument("--runs", type=int, default=DEFAULT_RUNS,
                        help=f"Number of runs per user count per mode (default: {DEFAULT_RUNS})")
     parser.add_argument("--seed", type=int, default=42,

@@ -1,26 +1,22 @@
 #!/usr/bin/env python3
 """
-FastAPI Model Server for Optimal Compression Prediction
+FastAPI Model Server for Dynamic Per-Frame Compression Prediction
 
-This server hosts the trained XGBoost model and provides an API
-for predicting optimal compression levels based on network conditions.
+This server hosts the dynamic per-frame model (compression_model_dynamic.joblib)
+that predicts per-frame compression based on frame complexity.
 
-The model uses 5 features:
-  - num_users: Number of users in the cell
-  - avg_cqi: Average Channel Quality Indicator
-  - fps: Frame rate (60, 72, 90, 120)
-  - size_mean_kb: Mean frame size in KB
-  - size_std_kb: Standard deviation of frame size in KB
+Features: num_users, cqi, fps, frame_complexity
 
 Usage:
     python3 model_server.py
 
 Endpoints:
-    GET  /health  - Health check
-    POST /predict - Predict optimal compression level
+    GET  /health             - Health check
+    POST /predict_per_frame  - Dynamic: per-frame compression for a user
 """
 
 import os
+from typing import List
 import numpy as np
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
@@ -29,37 +25,36 @@ import uvicorn
 import joblib
 
 # Configuration
-MODEL_PATH = Path(__file__).parent / "compression_model.joblib"
+DYNAMIC_MODEL_PATH = Path(__file__).parent / "compression_model_dynamic.joblib"
 VALID_COMPRESSION_LEVELS = np.array([5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80])
 
-# Feature columns expected by the model (must match training)
-FEATURE_COLUMNS = ['num_users', 'cqi_midpoint', 'fps', 'size_mean_kb', 'size_std_kb']
+# Feature columns expected by the dynamic model
+FEATURE_COLUMNS = ['num_users', 'cqi', 'fps', 'frame_complexity']
 
 # FastAPI app
 app = FastAPI(
     title="Compression Model API",
-    description="Predicts optimal XR video compression level based on network conditions",
-    version="2.0.0"
+    description="Predicts optimal per-frame XR video compression level based on network conditions",
+    version="4.0.0"
 )
 
 # Global model variables
-model = None
-scaler = None
+dynamic_model = None
+dynamic_scaler = None
 
 
-class PredictionRequest(BaseModel):
-    """Request schema for compression prediction."""
+class PerFrameBatchRequest(BaseModel):
+    """Batch request for per-frame compression prediction."""
     num_users: int = Field(..., ge=1, le=20, description="Number of users in the cell")
-    avg_cqi: float = Field(..., ge=1.0, le=15.0, description="Average Channel Quality Indicator")
-    fps: int = Field(default=60, ge=30, le=144, description="Frame rate (e.g., 60, 72, 90, 120)")
-    size_mean_kb: float = Field(default=65.0, ge=1.0, le=500.0, description="Mean frame size in KB")
-    size_std_kb: float = Field(default=34.8, ge=0.0, le=200.0, description="Standard deviation of frame size in KB")
+    avg_cqi: float = Field(..., ge=1.0, le=15.0, description="Average CQI for this user")
+    fps: int = Field(default=60, ge=30, le=144, description="Frame rate")
+    frame_complexities: List[float] = Field(..., description="List of frame complexities (size at max components, bytes)")
 
 
-class PredictionResponse(BaseModel):
-    """Response schema for compression prediction."""
-    optimal_compression: int = Field(..., description="Optimal compression level (5, 10, 15, ..., 80)")
-    raw_prediction: float = Field(..., description="Raw model prediction before snapping")
+class PerFrameBatchResponse(BaseModel):
+    """Response for per-frame batch prediction."""
+    per_frame_compression: List[int] = Field(..., description="Compression level per frame")
+    raw_predictions: List[float] = Field(..., description="Raw predictions before snapping")
 
 
 class HealthResponse(BaseModel):
@@ -77,26 +72,27 @@ def snap_to_compression_level(pred: float) -> int:
 
 @app.on_event("startup")
 async def load_model():
-    """Load the trained model on startup."""
-    global model, scaler
-    if MODEL_PATH.exists():
-        model_data = joblib.load(MODEL_PATH)
-        
-        # Handle both old (direct model) and new (dict with model + scaler) formats
-        if isinstance(model_data, dict):
-            model = model_data.get('model')
-            scaler = model_data.get('scaler')
-            feature_cols = model_data.get('feature_columns', FEATURE_COLUMNS)
-            print(f"Model loaded from {MODEL_PATH}")
+    """Load the dynamic per-frame model on startup."""
+    global dynamic_model, dynamic_scaler
+    
+    if DYNAMIC_MODEL_PATH.exists():
+        dynamic_data = joblib.load(DYNAMIC_MODEL_PATH)
+        if isinstance(dynamic_data, dict):
+            dynamic_model = dynamic_data.get('model')
+            dynamic_scaler = dynamic_data.get('scaler')
+            feature_cols = dynamic_data.get('feature_columns', FEATURE_COLUMNS)
+            model_type = dynamic_data.get('model_type', 'unknown')
+            print(f"Dynamic model loaded from {DYNAMIC_MODEL_PATH}")
+            print(f"  Type: {model_type}")
             print(f"  Features: {feature_cols}")
-            print(f"  Scaler: {'loaded' if scaler else 'not found'}")
+            print(f"  Scaler: {'loaded' if dynamic_scaler else 'not found'}")
         else:
-            # Legacy format: model_data is the model itself
-            model = model_data
-            scaler = None
-            print(f"Model loaded from {MODEL_PATH} (legacy format, no scaler)")
+            dynamic_model = dynamic_data
+            dynamic_scaler = None
+            print(f"Dynamic model loaded from {DYNAMIC_MODEL_PATH} (legacy format)")
     else:
-        print(f"WARNING: Model file not found at {MODEL_PATH}")
+        print(f"ERROR: Dynamic model not found at {DYNAMIC_MODEL_PATH}")
+        print(f"  Train with: python3 train_dynamic_model.py")
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -104,87 +100,52 @@ async def health_check():
     """Check server health and model status."""
     return HealthResponse(
         status="healthy",
-        model_loaded=model is not None,
-        feature_columns=FEATURE_COLUMNS if model is not None else []
+        model_loaded=dynamic_model is not None,
+        feature_columns=FEATURE_COLUMNS if dynamic_model is not None else []
     )
 
 
-@app.post("/predict", response_model=PredictionResponse)
-async def predict_compression(request: PredictionRequest):
+@app.post("/predict_per_frame", response_model=PerFrameBatchResponse)
+async def predict_per_frame(request: PerFrameBatchRequest):
     """
-    Predict optimal compression level for given network conditions.
+    Predict per-frame compression levels based on frame complexity.
+    
+    This endpoint uses the dynamic model to predict a different compression
+    level for each frame, based on the frame's inherent complexity
+    (size at max components).
     
     Args:
-        request: Contains num_users, avg_cqi, fps, size_mean_kb, size_std_kb
+        request: Contains num_users, avg_cqi, fps, and a list of frame_complexities
     
     Returns:
-        Optimal compression level (5, 10, 15, ..., 80)
+        Per-frame compression levels and raw predictions
     """
-    if model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
+    if dynamic_model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Dynamic per-frame model not loaded. Train with train_dynamic_model.py first."
+        )
     
-    # Create feature array: [num_users, cqi_midpoint, fps, size_mean_kb, size_std_kb]
-    features = np.array([[
-        request.num_users,
-        request.avg_cqi,
-        request.fps,
-        request.size_mean_kb,
-        request.size_std_kb
-    ]])
+    n_frames = len(request.frame_complexities)
     
-    # Scale features if scaler is available
-    if scaler is not None:
-        features = scaler.transform(features)
+    # Build feature matrix: [num_users, cqi, fps, frame_complexity] for each frame
+    features = np.array([
+        [request.num_users, request.avg_cqi, request.fps, fc]
+        for fc in request.frame_complexities
+    ])
     
-    # Get raw prediction
-    raw_pred = float(model.predict(features)[0])
+    # Scale features
+    if dynamic_scaler is not None:
+        features = dynamic_scaler.transform(features)
     
-    # Snap to valid compression level
-    optimal = snap_to_compression_level(raw_pred)
+    # Batch prediction (efficient)
+    raw_preds = dynamic_model.predict(features)
+    per_frame_comp = [snap_to_compression_level(float(p)) for p in raw_preds]
     
-    return PredictionResponse(
-        optimal_compression=optimal,
-        raw_prediction=raw_pred
+    return PerFrameBatchResponse(
+        per_frame_compression=per_frame_comp,
+        raw_predictions=[float(p) for p in raw_preds]
     )
-
-
-@app.post("/predict_batch")
-async def predict_batch(requests: list[PredictionRequest]):
-    """
-    Predict optimal compression levels for multiple users.
-    
-    Args:
-        requests: List of prediction requests
-    
-    Returns:
-        List of optimal compression levels
-    """
-    if model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
-    
-    results = []
-    for req in requests:
-        # Create feature array: [num_users, cqi_midpoint, fps, size_mean_kb, size_std_kb]
-        features = np.array([[
-            req.num_users,
-            req.avg_cqi,
-            req.fps,
-            req.size_mean_kb,
-            req.size_std_kb
-        ]])
-        
-        # Scale features if scaler is available
-        if scaler is not None:
-            features = scaler.transform(features)
-        
-        raw_pred = float(model.predict(features)[0])
-        optimal = snap_to_compression_level(raw_pred)
-        results.append({
-            "optimal_compression": optimal,
-            "raw_prediction": raw_pred
-        })
-    
-    return results
 
 
 if __name__ == "__main__":

@@ -30,6 +30,17 @@ def evaluate_compression(compressor: PCACompressor, test_frames: np.ndarray,
     logging.info("Evaluating PCA compression at different component counts...")
     logging.info("=" * 60)
 
+    # Add original frame sizes with MSE = 0
+    original_components = img_size * img_size * 3
+    original_size_bytes = original_components * 4  # 4 bytes per float32
+    for frame_idx in range(len(test_frames)):
+        all_results.append({
+            'frame': frame_idx + 1,
+            'components': original_components,
+            'mse': 0.0,
+            'size_bytes': original_size_bytes
+        })
+
     for n_components in components_list:
         logging.info(f"Components: {n_components}")
 

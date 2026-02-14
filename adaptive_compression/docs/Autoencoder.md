@@ -137,9 +137,11 @@ The evaluation produces a CSV file with columns:
 | Column | Description |
 |--------|-------------|
 | `frame` | Frame index (1-based) |
-| `keep_ratio` | Ratio of coefficients kept (0.05 to 0.80) |
+| `keep_ratio` | Ratio of coefficients kept (0.05 to 1.0) |
 | `mse` | Mean Squared Error (pixel scale 0-255) |
 | `size_bytes` | Compressed size in bytes |
+
+**Note**: For each frame, an additional row is included with the original uncompressed frame size where `keep_ratio` = 1.0, `mse` = 0, and `size_bytes` = `img_size × img_size × 3 × 4`.
 
 ### Visualization
 A PNG file with two plots:

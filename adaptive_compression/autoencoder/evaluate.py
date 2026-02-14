@@ -32,6 +32,16 @@ def evaluate_compression(model: torch.nn.Module, test_frames: np.ndarray, device
     logging.info("Evaluating compression at different rates...")
     logging.info("=" * 60)
 
+    # Add original frame sizes with MSE = 0
+    original_size_bytes = img_size * img_size * 3 * 4
+    for frame_idx in range(len(test_frames)):
+        all_results.append({
+            'frame': frame_idx + 1,
+            'keep_ratio': 1.0,
+            'mse': 0.0,
+            'size_bytes': original_size_bytes
+        })
+
     model.eval()
     for keep_ratio in keep_ratios:
         compression_pct = int((1 - keep_ratio) * 100)

@@ -16,7 +16,7 @@ from .utils import setup_logging, save_results, plot_results
 def main() -> None:
     """Main function to run PCA compression evaluation."""
     parser = argparse.ArgumentParser(description="PCA-based video compression analysis")
-    parser.add_argument("--video-path", type=Path, default=Path("../../data/sintel_trailer-1080p.mp4"),
+    parser.add_argument("--video-path", type=Path, default=Path("../data/sintel_trailer-1080p.mp4"),
                         help="Path to the input video file")
     parser.add_argument("--max-components", type=int, default=DEFAULT_MAX_COMPONENTS,
                         help="Maximum number of PCA components")

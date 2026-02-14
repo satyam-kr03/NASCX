@@ -2,7 +2,25 @@
 
 ## Overview
 
-This document describes the dataset generation framework for training the per-frame dynamic compression model. The dataset captures the relationship between frame complexity, network conditions (CQI, number of users), compression level choices, and resulting delivery outcomes.
+This document describes the dataset generation framework for training the per-frame dynamic compression model. The dataset captures the relationship between frame complexity, network conditions (CQI, number of users), and the **optimal compression level** required to meet delivery deadlines.
+
+Unlike previous approaches that used random exploration, this framework uses a **Scenario Sweep** methodology to generating ground-truth labels for supervised learning.
+
+---
+
+## Methodology: Ground-Truth Sweep
+
+To determine the optimal compression level for any given frame, we simulate the same scenario multiple times under different compression configurations.
+
+1.  **Scenario Definition**: A specific configuration of Users, Traffic Profiles, FPS rates, and Random Seed is fixed.
+2.  **Compression Sweep**: We run **16 parallel simulations** for this exact scenario.
+    *   Simulation 1: All users, all frames set to Compression Level 5.
+    *   Simulation 2: All users, all frames set to Compression Level 10.
+    *   ...
+    *   Simulation 16: All users, all frames set to Compression Level 80.
+3.  **Label Extraction**: For every individual frame of each user, we analyze the 16 outcomes to find the **Highest Quality (Lowest MSE)** level that was successfully delivered on time.
+
+This produces a clean, labeled dataset where the model aims to predict the optimal decision directly.
 
 ---
 
@@ -34,56 +52,60 @@ Expected frame count = `fps × sim-time` (default 20s).
 
 ## Per-Frame Dataset Schema
 
+The output is a labeled dataset for Supervised Learning.
+
 | Column | Type | Description |
 |--------|------|-------------|
-| `run_id` | int | Unique simulation run identifier |
+| `run_id` | int | Unique simulation scenario identifier |
 | `num_users` | int | Total users in simulation (2-10) |
 | `user_id` | int | User index |
 | `fps` | int | Frame rate |
 | `avg_cqi` | float | Average CQI for this user |
 | `frame_number` | int | Frame index within the video |
-| `frame_complexity` | float | Frame size at max components (bytes) — inherent difficulty |
-| `compression_level` | int | PCA components assigned to this frame |
-| `compressed_size_bytes` | int | Actual frame size after compression |
-| `mse` | float | Reconstruction error for this frame |
-| `delay_ms` | float | End-to-end delay for this frame |
-| `received_on_time` | int | 1 if delivered within deadline, 0 otherwise |
+| `frame_complexity` | float | Frame size at independent max components (bytes) — inherent difficulty |
+| **`optimal_compression_level`** | **int** | **Target Label**: The best compression level (5-80) |
+| `min_possible_mse` | float | The MSE achieved by the optimal level |
+| `achieved_delay` | float | The delay achieved by the optimal level |
 
 ### Key Concept: Frame Complexity
 
-**Frame complexity** = the frame's size when using maximum components (80). At `components=80`, the frame is minimally compressed, so `size_bytes` reflects the inherent frame complexity:
+**Frame complexity** = the frame's size when using maximum components (80).
+This is an **input feature** representing the inherent difficulty of the frame.
+- High complexity (~120KB) requires more aggressive compression to fit in the pipe.
+- Low complexity (~40KB) can use lighter compression (higher level) or none.
 
-- **Complex frames** (high-motion, detailed content) → larger size at `components=80` (~120KB)
-- **Simple frames** (static, less detail) → smaller size at `components=80` (~40KB)
-
-The per-frame model learns: *"For a frame of complexity X, under network conditions (num_users, CQI), what compression level best balances quality (MSE) and deliverability (on-time rate)?"*
+The model learns the mapping:
+`f(Complexity, CQI, Users, FPS) → Optimal Compression Level`
 
 ---
 
 ## Usage
+
+**Note:** This process is computationally intensive. A single "Run" involves 16 full simulations.
 
 ```bash
 cd /home/teaching/Projects/NASCX
 ./opp_shell.sh
 cd simu5g-1.3.0/simulations/NR/xr
 
-# Quick test (3 users, per-frame compression)
+# Quick test (1 scenario, 3 users, 16 simulations)
 python3 generate_per_frame_dataset.py --test
 
 # Full dataset generation (parallel)
-python3 generate_per_frame_dataset.py --runs 5 -j 8
+# Uses multiprocessing to handle multiple scenarios at once.
+python3 generate_per_frame_dataset.py --runs 5 --workers 16
 ```
 
 ### Parameters
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--runs` | 5 | Runs per user count |
-| `--deadline` | 5.0 | Delay deadline in ms |
+| `--runs` | 5 | Scenarios per user count (2-10). Total scenarios = 9 × runs. |
+| `--deadline` | 5.0 | Delay deadline in ms used to determine success. |
 | `--seed` | 42 | Random seed |
-| `--workers` / `-j` | auto | Parallel workers |
-| `--save-interval` | 5 | Checkpoint every N runs |
-| `--test` | - | Quick test with 3 users |
+| `--workers` / `-j` | auto | Parallel workers (recommend high core count) |
+| `--save-interval` | 5 | Save to CSV every N completed scenarios |
+| `--test` | - | Quick test with 3 users (1 scenario) |
 
 ---
 
@@ -92,12 +114,10 @@ python3 generate_per_frame_dataset.py --runs 5 -j 8
 | File | Description |
 |------|-------------|
 | `generate_traffic_profiles.py` | Generates synthetic traffic CSV files |
-| `generate_per_frame_dataset.py` | Runs simulations and generates per-frame dataset |
-| `train_dynamic_model.py` | Trains the dynamic per-frame XGBoost model |
+| `generate_per_frame_dataset.py` | Runs Scenario Sweeps and generates labeled dataset |
+| `train_dynamic_model.py` | Trains the supervised XGBoost model (needs update for new schema) |
 | `traffic_*.csv` | Traffic profiles (5 variants) |
-| `per_frame_dataset.csv` | Per-frame dataset output |
-| `compression_model_dynamic.joblib` | Trained dynamic model |
-| `traffic_profiles_metadata.csv` | Traffic profile statistics |
+| `datasets/per_frame_dataset.csv` | **New** Labeled per-frame dataset output |
 
 ---
 
@@ -105,8 +125,7 @@ python3 generate_per_frame_dataset.py --runs 5 -j 8
 
 ```
 1. generate_traffic_profiles.py     → produces traffic_*.csv
-2. generate_per_frame_dataset.py    → produces per_frame_dataset.csv
+2. generate_per_frame_dataset.py    → produces datasets/per_frame_dataset.csv (Labeled data)
 3. train_dynamic_model.py           → produces compression_model_dynamic.joblib
 4. model_server.py                  → serves /predict_per_frame endpoint
-5. run_comparison.py                → runs Uncompressed vs ML-Dynamic comparison
 ```

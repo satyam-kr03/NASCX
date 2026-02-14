@@ -12,6 +12,8 @@
 #include <iomanip>
 #include <numeric>
 #include <sstream>
+#include <unistd.h>
+#include <limits.h>
 
 namespace simu5g
 {
@@ -73,15 +75,7 @@ namespace simu5g
             trackingStarted = false;
             userCount++;
 
-            rcvdPktSignal = registerSignal("rcvdPkt");
-            rcvdBytesSignal = registerSignal("rcvdBytes");
-            frameDelaySignal = registerSignal("frameDelay");
-            frameMseSignal = registerSignal("frameMse");
-            frameErrorSignal = registerSignal("frameError");
-            frameOnTimeSignal = registerSignal("frameOnTime");
-            meanErrorSignal = registerSignal("meanError");
-            delayReliabilitySignal = registerSignal("delayReliability");
-            userSatisfiedSignal = registerSignal("userSatisfied");
+
 
             resultFilename = par("resultFile").stdstringValue();
             if (!resultFilename.empty())
@@ -218,12 +212,7 @@ namespace simu5g
             }
             receivedFrames[frameNumber].effectiveError = effectiveError;
 
-            emit(rcvdPktSignal, 1);
-            emit(rcvdBytesSignal, (long)sizeBytes);
-            emit(frameDelaySignal, delay);
-            emit(frameMseSignal, mse);
-            emit(frameErrorSignal, effectiveError);
-            emit(frameOnTimeSignal, onTime ? 1 : 0);
+
 
             if (resultFile.is_open())
             {
@@ -339,49 +328,58 @@ namespace simu5g
             qoeComputed = true;
         }
 
-        emit(meanErrorSignal, meanError);
+
 
         // Calculate delay reliability and user satisfaction
         double delayReliability = onTimeRatio;  // Percentage of frames delivered on-time
         bool userSatisfied = (delayReliability >= reliabilityThreshold);  // 99% threshold
         
-        emit(delayReliabilitySignal, delayReliability);
-        emit(userSatisfiedSignal, userSatisfied ? 1 : 0);
+
 
         // Update global satisfied user count
         if (userSatisfied) {
             totalSatisfiedUsers++;
         }
 
+        // Write unique summary file for this user
+        if (!resultFilename.empty()) {
+            std::string summaryFilename = resultFilename + ".summary";
+            std::ofstream summaryFile(summaryFilename);
+            if (summaryFile.is_open()) {
+                // Header
+                summaryFile << "user_id,avg_cqi,total_frames,received_frames,on_time_frames,"
+                            << "late_frames,lost_frames,delivery_ratio,on_time_ratio,loss_ratio,"
+                            << "mean_error,avg_delay_ms,deadline_ms,delay_reliability,"
+                            << "reliability_threshold,user_satisfied" << endl;
+                
+                // Values
+                summaryFile << getParentModule()->getIndex() << "," // user_id
+                            << avgCqi_ << ","
+                            << totalFrames << ","
+                            << receivedCount << ","
+                            << onTimeCount << ","
+                            << lateCount << ","
+                            << lostCount << ","
+                            << deliveryRatio << ","
+                            << onTimeRatio << ","
+                            << lossRatio << ","
+                            << meanError << ","
+                            << avgDelay << ","
+                            << deadlineMs << ","
+                            << delayReliability << ","
+                            << reliabilityThreshold << ","
+                            << (userSatisfied ? 1 : 0) << endl;
+                
+                summaryFile.close();
+            }
+        }
+        
+        // recordScalar calls removed as requested
+        /*
         recordScalar("totalFrames", totalFrames);
         recordScalar("receivedFrames", receivedCount);
-        recordScalar("onTimeFrames", onTimeCount);
-        recordScalar("lateFrames", lateCount);
-        recordScalar("lostFrames", lostCount);
-        recordScalar("deliveryRatio", deliveryRatio);
-        recordScalar("onTimeRatio", onTimeRatio);
-        recordScalar("lossRatio", lossRatio);
-        recordScalar("meanError", meanError);
-        recordScalar("avgDelay_ms", avgDelay);
-        recordScalar("deadline_ms", deadlineMs);
-        recordScalar("delayReliability", delayReliability);
-        recordScalar("reliabilityThreshold", reliabilityThreshold);
-        recordScalar("userSatisfied", userSatisfied ? 1 : 0);
-
-        std::cout << "\n========== XR Traffic QoE Summary ==========" << endl;
-        std::cout << "Module:            " << getFullPath() << endl;
-        std::cout << "Total frames:      " << totalFrames << endl;
-        std::cout << "Received frames:   " << receivedCount << " (" << (deliveryRatio * 100) << "%)" << endl;
-        std::cout << "On-time frames:    " << onTimeCount << " (" << (onTimeRatio * 100) << "%)" << endl;
-        std::cout << "Late frames:       " << lateCount << " (error=" << elostValue << " each)" << endl;
-        std::cout << "Lost frames:       " << lostCount << " (error=" << elostValue << " each, " << (lossRatio * 100) << "%)" << endl;
-        std::cout << "Mean Error (QoE):  " << meanError << " (sumError=" << sumError << ")" << endl;
-        std::cout << "Avg Delay:         " << avgDelay << " ms" << endl;
-        std::cout << "Deadline:          " << deadlineMs << " ms" << endl;
-        std::cout << "Delay Reliability: " << (delayReliability * 100) << "% (threshold: " << (reliabilityThreshold * 100) << "%)" << endl;
-        std::cout << "User Satisfied:    " << (userSatisfied ? "YES" : "NO") << endl;
-        std::cout << "Avg DL CQI:        " << avgCqi_ << endl;
-        std::cout << "=========================================" << endl;
+        ...
+        */
     }
 
     void XRTrafficReceiver::finish()
@@ -420,9 +418,8 @@ namespace simu5g
             resultFile.close();
         }
 
-        finishedCount++; // Increment BEFORE the check
-
-        if (finishedCount == userCount && !globalStatsPrinted) // Changed condition
+        // Global stats aggregation
+        if (finishedCount == userCount && !globalStatsPrinted)
         {
             double globalAvgMeanError = (totalExpectedFrames > 0) ? totalSumError / totalExpectedFrames : 0.0;
             double globalDelayReliability = (totalExpectedFrames > 0) ? (double)totalOnTimeFrames / totalExpectedFrames : 0.0;
@@ -436,14 +433,11 @@ namespace simu5g
                 globalResultFile.close();
             }
 
+            // Optional: Print global stats to stdout if desired, otherwise comment out
+            /*
             std::cout << "\n========== Global XR Traffic QoE Summary ==========" << endl;
-            std::cout << "Number of users:       " << userCount << endl;
-            std::cout << "Satisfied users:       " << totalSatisfiedUsers << " / " << userCount << endl;
-            std::cout << "Total expected frames: " << totalExpectedFrames << endl;
-            std::cout << "Total on-time frames:  " << totalOnTimeFrames << endl;
-            std::cout << "Global Delay Reliab:   " << (globalDelayReliability * 100) << "%" << endl;
-            std::cout << "Global Avg Mean Error: " << globalAvgMeanError << endl;
-            std::cout << "===================================================" << endl;
+            ...
+            */
             globalStatsPrinted = true;
         }
     }
@@ -461,12 +455,21 @@ namespace simu5g
 
     double XRTrafficReceiver::getMaxMSE(const std::string &pcaFile, int minComponents)
     {
+        // Get absolute path for debugging
+        char cwd[PATH_MAX];
+        if (getcwd(cwd, sizeof(cwd)) != NULL) {
+            std::cout << "XRTrafficReceiver: Current working directory: " << cwd << endl;
+        } else {
+            EV_WARN << "XRTrafficReceiver: getcwd() error" << endl;
+        }
+
         if (pcaFile.empty())
         {
             EV_WARN << "No pcaFile specified for autoElost, using default 1000.0" << endl;
             return 1000.0;
         }
 
+        std::cout << "XRTrafficReceiver: Opening PCA file: " << pcaFile << endl;
         std::ifstream f(pcaFile);
         if (!f.is_open())
         {
@@ -477,7 +480,13 @@ namespace simu5g
 
         std::string line;
         // Skip header
-        std::getline(f, line);
+        if (std::getline(f, line)) {
+             std::cout << "XRTrafficReceiver: Header line: " << line << endl;
+        } else {
+             EV_WARN << "XRTrafficReceiver: Empty PCA file!" << endl;
+             f.close();
+             return 1000.0;
+        }
 
         double maxMSE = 0.0;
         int count = 0;

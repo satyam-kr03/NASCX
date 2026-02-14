@@ -57,17 +57,6 @@ namespace simu5g
         // Flag to prevent double computation
         bool qoeComputed;
 
-        // Statistics signals
-        simsignal_t rcvdPktSignal;
-        simsignal_t rcvdBytesSignal;
-        simsignal_t frameDelaySignal;
-        simsignal_t frameMseSignal;
-        simsignal_t frameErrorSignal;
-        simsignal_t frameOnTimeSignal;
-        simsignal_t meanErrorSignal;
-        simsignal_t delayReliabilitySignal;
-        simsignal_t userSatisfiedSignal;
-
         // Result file
         ofstream resultFile;
         string resultFilename;

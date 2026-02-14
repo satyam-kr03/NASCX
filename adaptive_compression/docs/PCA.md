@@ -139,13 +139,20 @@ The evaluation produces a CSV file with columns:
 | Column | Description |
 |--------|-------------|
 | `frame` | Frame index (1-based) |
-| `components` | Number of PCA components used |
+| `components` | Number of PCA components used (or full dimensionality for original) |
 | `mse` | Mean Squared Error (pixel scale 0-255) |
 | `size_bytes` | Compressed size in bytes |
+
+**Note**: For each frame, an additional row is included with the original uncompressed frame size where `components` = `img_size × img_size × 3`, `mse` = 0, and `size_bytes` = `img_size × img_size × 3 × 4`.
 
 ### Size Calculation
 ```
 size_bytes = n_components × img_size × 4 (bytes per float32)
+```
+
+For the original uncompressed frame:
+```
+size_bytes = img_size × img_size × 3 × 4 (bytes per float32)
 ```
 
 For example, with 40 components and 224×224 images:

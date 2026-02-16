@@ -11,7 +11,7 @@ conda activate mlc
 cd /home/teaching/Projects/NASCX/simu5g-1.3.0/simulations/NR/xr
 
 # Loop over number of users from 2 to 10
-for num_users in {2..10}
+for num_users in {5..10}
 do
     echo "=========================================="
     echo "Processing num_users = $num_users"
@@ -19,7 +19,7 @@ do
 
     # Generate the surrogate dataset
     echo "Generating dataset for $num_users users..."
-    python generate_per_frame_dataset.py --num-users $num_users --runs 50 --workers 1
+    python generate_per_frame_dataset.py --num-users $num_users --runs 10 --workers 32
 
     # Check if dataset was created successfully
     if [ ! -f "datasets/surrogate_n${num_users}.csv" ]; then

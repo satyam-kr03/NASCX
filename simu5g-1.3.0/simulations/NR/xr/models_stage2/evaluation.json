@@ -1,0 +1,65 @@
+{
+  "2": {
+    "top1_accuracy": 0.9481236203090507,
+    "top3_accuracy": 1.0,
+    "oracle_mean_error": 44.77588766357691,
+    "s2_mean_error": 44.98507149269184,
+    "random_mean_error": 66.3011935905905
+  },
+  "3": {
+    "top1_accuracy": 0.9182539682539682,
+    "top3_accuracy": 0.9888888888888889,
+    "oracle_mean_error": 125.95232206143083,
+    "s2_mean_error": 126.365516406345,
+    "random_mean_error": 182.97707339345462
+  },
+  "4": {
+    "top1_accuracy": 0.8845628415300546,
+    "top3_accuracy": 0.967896174863388,
+    "oracle_mean_error": 73.60090723980467,
+    "s2_mean_error": 74.12462095880265,
+    "random_mean_error": 125.23911161296569
+  },
+  "5": {
+    "top1_accuracy": 0.9003021148036254,
+    "top3_accuracy": 0.9673716012084592,
+    "oracle_mean_error": 112.84324377279988,
+    "s2_mean_error": 115.12448923658027,
+    "random_mean_error": 177.88765723440582
+  },
+  "6": {
+    "top1_accuracy": 0.8785780240073869,
+    "top3_accuracy": 0.9575253924284395,
+    "oracle_mean_error": 84.71849339212517,
+    "s2_mean_error": 86.57463760419455,
+    "random_mean_error": 150.95470974281335
+  },
+  "7": {
+    "top1_accuracy": 0.9205905826017557,
+    "top3_accuracy": 0.9712689545091779,
+    "oracle_mean_error": 80.80288406014918,
+    "s2_mean_error": 81.54437481524558,
+    "random_mean_error": 140.32113473180382
+  },
+  "8": {
+    "top1_accuracy": 0.8572423398328691,
+    "top3_accuracy": 0.947075208913649,
+    "oracle_mean_error": 125.24988197029924,
+    "s2_mean_error": 126.12562036052512,
+    "random_mean_error": 184.3146809392653
+  },
+  "9": {
+    "top1_accuracy": 0.8701622971285893,
+    "top3_accuracy": 0.9500624219725343,
+    "oracle_mean_error": 94.10508962446235,
+    "s2_mean_error": 95.67397726690874,
+    "random_mean_error": 153.4839832798
+  },
+  "10": {
+    "top1_accuracy": 0.7819241982507289,
+    "top3_accuracy": 0.9093294460641399,
+    "oracle_mean_error": 98.89019187647122,
+    "s2_mean_error": 101.63843359186072,
+    "random_mean_error": 177.51326013276946
+  }
+}

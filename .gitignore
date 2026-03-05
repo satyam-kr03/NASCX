@@ -3,3 +3,4 @@ data/
 __pycache__/
 *.pkl
 *.pt
+semantic_relevance/Salient360/SalViT360

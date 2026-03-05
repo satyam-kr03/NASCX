@@ -43,7 +43,7 @@ simple XRTrafficReceiver like IApp
         bool autoElost = default(true);  // Automatically set Elost to max MSE at minComponents
         double elostValue = default(0);  // Manual Elost value (used if autoElost=false)
         string pcaFile = default("");    // PCA sweep CSV (needed when autoElost=true)
-        int minComponents = default(5);  // Most aggressive compression level
+        int minComponents = default(25);  // Most aggressive compression level (matches PCA sweep steps)
         int expectedFrames = default(1200);  // Expected number of frames (20s * 60fps)
         
         // Output parameters

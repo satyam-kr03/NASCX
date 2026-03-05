@@ -752,6 +752,21 @@ double LtePhyUe::getAverageCqi(Direction dir)
     throw cRuntimeError("Direction %d is not handled.", dir);
 }
 
+unsigned int LtePhyUe::getLastCqi(Direction dir)
+{
+    if (dir == DL) {
+        if (cqiDlSamples_.empty())
+            return 0;
+        return (unsigned int)cqiDlSamples_.back();
+    }
+    if (dir == UL) {
+        if (cqiUlSamples_.empty())
+            return 0;
+        return (unsigned int)cqiUlSamples_.back();
+    }
+    throw cRuntimeError("Direction %d is not handled.", dir);
+}
+
 double LtePhyUe::getVarianceCqi(Direction dir)
 {
     double avgCqi = getAverageCqi(dir);

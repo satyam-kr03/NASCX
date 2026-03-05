@@ -27,6 +27,7 @@ simple XRTrafficSource like IApp
         double startTime @unit(s) = default(0s);
         string pcaFile = default("pca_selected.csv");  // CSV file containing frame data
         int compressionLevel = default(0);  // Filter by components: 0=all, else filter (5,10,15,...,80)
+        string selectionMode = default("fixed");  // "fixed" = single compressionLevel, "random" = random per-frame
         
         // Jitter parameters (in milliseconds)
         double jitterMean @unit(ms) = default(0ms);

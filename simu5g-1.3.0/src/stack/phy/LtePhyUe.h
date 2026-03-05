@@ -168,6 +168,7 @@ class LtePhyUe : public LtePhyBase
     void recordCqi(unsigned int sample, Direction dir);
     double getAverageCqi(Direction dir);
     double getVarianceCqi(Direction dir);
+    unsigned int getLastCqi(Direction dir);
 };
 
 } //namespace

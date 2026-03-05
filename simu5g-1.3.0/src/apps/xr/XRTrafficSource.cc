@@ -1,4 +1,5 @@
 #include "XRTrafficSource.h"
+#include <set>
 #include "inet/common/ModuleAccess.h"
 #include "inet/common/packet/Packet.h"
 #include "inet/common/TimeTag_m.h"
@@ -39,6 +40,7 @@ namespace simu5g
             destAddressStr = par("destAddress").stdstringValue();
             pcaFile = par("pcaFile").stdstringValue();
             compressionLevel_ = par("compressionLevel").intValue();
+            selectionMode_ = par("selectionMode").stdstringValue();
 
             frame_number = 0;
             sendTimer = new cMessage("sendTimer");
@@ -96,7 +98,7 @@ namespace simu5g
         socket.connect(destAddress, destPort);
 
         // Schedule first packet after socket is bound and application is started
-        if (!frames.empty())
+        if (getFrameCount() > 0)
         {
             double jitter_ms = tran_gau_num(jitter_mean, jitter_sd, jitter_min, jitter_max);
             double sendDelay = (1.0 / fps) + (jitter_ms / 1000.0);
@@ -142,17 +144,52 @@ namespace simu5g
 
     void XRTrafficSource::sendPacket()
     {
-        if (frame_number >= (int)frames.size())
+        int totalFrames = getFrameCount();
+        if (frame_number >= totalFrames)
         {
             EV << "All frames sent, stopping transmission" << endl;
             return;
         }
 
-        // Get current frame info
-        FrameInfo &frameInfo = frames[frame_number];
+        FrameInfo frameInfo;
+
+        if (selectionMode_ == "random")
+        {
+            // Random per-frame compression selection
+            int frameNum = frameNumbers_[frame_number];
+            int compIdx = intuniform(0, availableComponents_.size() - 1);
+            int chosenComponents = availableComponents_[compIdx];
+
+            auto frameIt = allFrameData_.find(frameNum);
+            if (frameIt != allFrameData_.end())
+            {
+                auto compIt = frameIt->second.find(chosenComponents);
+                if (compIt != frameIt->second.end())
+                {
+                    frameInfo = compIt->second;
+                }
+                else
+                {
+                    EV_ERROR << "No data for frame " << frameNum
+                             << " at components=" << chosenComponents << endl;
+                    frame_number++;
+                    return;
+                }
+            }
+            else
+            {
+                EV_ERROR << "No data for frame " << frameNum << endl;
+                frame_number++;
+                return;
+            }
+        }
+        else
+        {
+            // Fixed mode: use legacy frames vector
+            frameInfo = frames[frame_number];
+        }
 
         // Update binder with XR metrics for this frame
-        // static int lastFrameUpdated = -1;
         if (frameInfo.frame_number != lastFrameUpdated)
         {
             if (binder_ != nullptr && macNodeId_ != NODEID_NONE)
@@ -226,14 +263,15 @@ namespace simu5g
            << ": components=" << frameInfo.components
            << ", size=" << frameInfo.size_bytes << " bytes"
            << ", MSE=" << frameInfo.mse
-           << ", fragments=" << totalFragments << endl;
+           << ", fragments=" << totalFragments
+           << ", mode=" << selectionMode_ << endl;
 
         frame_number++;
     }
 
     void XRTrafficSource::scheduleNextPacket()
     {
-        if (frame_number >= (int)frames.size())
+        if (frame_number >= getFrameCount())
         {
             return;
         }
@@ -286,6 +324,9 @@ namespace simu5g
 
         // Parse data lines: frame,components,mse,size_bytes
         int lineNum = 1;
+        std::set<int> uniqueFrames;
+        std::set<int> uniqueComponents;
+
         while (getline(f, line))
         {
             lineNum++;
@@ -304,7 +345,7 @@ namespace simu5g
                 fields.push_back(field);
             }
 
-            if (fields.size() != 4)
+            if (fields.size() < 4)
             {
                 EV_WARN << "Skipping malformed line " << lineNum << " in " << pcaFile
                         << " (expected 4 fields, got " << fields.size() << ")" << endl;
@@ -318,11 +359,24 @@ namespace simu5g
                 fi.components = stoi(fields[1]);
                 fi.mse = stod(fields[2]);
                 fi.size_bytes = stoi(fields[3]);
-                
-                // Filter by compression level if specified
-                if (compressionLevel_ == 0 || fi.components == compressionLevel_)
+
+                // Always store in allFrameData_ for any selection mode
+                allFrameData_[fi.frame_number][fi.components] = fi;
+
+                // Track unique frames and components (exclude uncompressed)
+                uniqueFrames.insert(fi.frame_number);
+                if (fi.components != 150528 && fi.components != 0)  // Exclude uncompressed
                 {
-                    frames.push_back(fi);
+                    uniqueComponents.insert(fi.components);
+                }
+
+                // For "fixed" mode: also populate legacy frames vector
+                if (selectionMode_ == "fixed")
+                {
+                    if (compressionLevel_ == 0 || fi.components == compressionLevel_)
+                    {
+                        frames.push_back(fi);
+                    }
                 }
             }
             catch (const exception &e)
@@ -334,27 +388,49 @@ namespace simu5g
 
         f.close();
 
-        EV << "Loaded " << frames.size() << " frames from PCA reconstruction file "
-           << pcaFile << endl;
+        // Build sorted vectors from sets
+        frameNumbers_.assign(uniqueFrames.begin(), uniqueFrames.end());
+        availableComponents_.assign(uniqueComponents.begin(), uniqueComponents.end());
 
-        if (!frames.empty())
+        int totalLoaded = (selectionMode_ == "random") ? (int)frameNumbers_.size() : (int)frames.size();
+
+        EV << "Loaded PCA data from " << pcaFile
+           << ": " << uniqueFrames.size() << " unique frames"
+           << ", " << availableComponents_.size() << " compression levels"
+           << ", selectionMode=" << selectionMode_
+           << ", effective frame count=" << totalLoaded << endl;
+
+        if (selectionMode_ == "random")
         {
-            // Calculate summary statistics
-            int minSize = frames[0].size_bytes;
-            int maxSize = frames[0].size_bytes;
-            double avgMSE = 0;
-
-            for (const auto &frame : frames)
-            {
-                minSize = min(minSize, frame.size_bytes);
-                maxSize = max(maxSize, frame.size_bytes);
-                avgMSE += frame.mse;
-            }
-            avgMSE /= frames.size();
-
-            EV << "  Frame size range: " << minSize << " - " << maxSize << " bytes" << endl;
-            EV << "  Average MSE: " << avgMSE << endl;
+            EV << "  Available components: ";
+            for (int c : availableComponents_) EV << c << " ";
+            EV << endl;
         }
+
+        if (!frames.empty() || !frameNumbers_.empty())
+        {
+            // Calculate summary statistics from allFrameData_
+            double avgMSE = 0;
+            int count = 0;
+            for (const auto &framePair : allFrameData_)
+            {
+                for (const auto &compPair : framePair.second)
+                {
+                    avgMSE += compPair.second.mse;
+                    count++;
+                }
+            }
+            if (count > 0) avgMSE /= count;
+            EV << "  Overall average MSE across all levels: " << avgMSE << endl;
+        }
+    }
+
+    int XRTrafficSource::getFrameCount() const
+    {
+        if (selectionMode_ == "random")
+            return (int)frameNumbers_.size();
+        else
+            return (int)frames.size();
     }
 
     void XRTrafficSource::finish()

@@ -84,7 +84,7 @@ namespace simu5g
                 if (resultFile.is_open())
                 {
                     resultFile << "frameNumber,components,mse,sizeBytes,genTime,recvTime,"
-                               << "delay_ms,receivedOnTime,effectiveError,deadline_ms" << endl;
+                               << "delay_ms,receivedOnTime,effectiveError,deadline_ms,cqi" << endl;
                 }
             }
 
@@ -100,7 +100,27 @@ namespace simu5g
         socket.setCallback(this);
         socket.bind(localPort);
 
-        std::cout << "XRTrafficReceiver: Socket bound to port " << localPort << endl;
+        // Resolve PHY pointer early so we can query per-frame CQI
+        try {
+            cModule *ue = getParentModule();
+            if (ue != nullptr) {
+                cModule *cellularNic = ue->getSubmodule("cellularNic");
+                if (cellularNic != nullptr) {
+                    cModule *phyModule = cellularNic->getSubmodule("nrPhy");
+                    if (phyModule == nullptr) {
+                        phyModule = cellularNic->getSubmodule("phy");
+                    }
+                    if (phyModule != nullptr) {
+                        phyUe_ = dynamic_cast<LtePhyUe*>(phyModule);
+                    }
+                }
+            }
+        } catch (...) {
+            EV_WARN << "Could not resolve PHY module for per-frame CQI" << endl;
+        }
+
+        std::cout << "XRTrafficReceiver: Socket bound to port " << localPort
+                  << ", phyUe_=" << (phyUe_ ? "resolved" : "null") << endl;
     }
 
     void XRTrafficReceiver::handleStopOperation(LifecycleOperation *operation)
@@ -177,6 +197,7 @@ namespace simu5g
             stats.effectiveError = elostValue; // penalty for frames that never complete
             stats.fragmentsReceived = 1;
             stats.totalFragments = totalFragments;
+            stats.cqi = 0; // will be set when frame completes
 
             receivedFrames[frameNumber] = stats;
 
@@ -200,6 +221,13 @@ namespace simu5g
             bool onTime = (delay <= deadlineMs);
             receivedFrames[frameNumber].receivedOnTime = onTime;
 
+            // Query instantaneous DL CQI from UE PHY layer
+            unsigned int frameCqi = 0;
+            if (phyUe_ != nullptr) {
+                frameCqi = phyUe_->getLastCqi(DL);
+            }
+            receivedFrames[frameNumber].cqi = frameCqi;
+
             double effectiveError;
             if (onTime)
             {
@@ -220,12 +248,13 @@ namespace simu5g
                            << sizeBytes << "," << fixed << setprecision(9) << genTime << ","
                            << recvTime.dbl() << "," << setprecision(6) << delay << ","
                            << (onTime ? 1 : 0) << "," << effectiveError << ","
-                           << deadlineMs << endl;
+                           << deadlineMs << "," << frameCqi << endl;
             }
 
             std::cout << "Frame " << frameNumber << " COMPLETE: delay=" << delay
                       << "ms, onTime=" << onTime << ", MSE=" << mse
-                      << ", error=" << effectiveError << endl;
+                      << ", error=" << effectiveError
+                      << ", cqi=" << frameCqi << endl;
         }
 
         delete packet;
@@ -250,6 +279,7 @@ namespace simu5g
                 lostStats.delay = -1;
                 lostStats.receivedOnTime = false;
                 lostStats.effectiveError = elostValue;
+                lostStats.cqi = 0;
 
                 receivedFrames[i] = lostStats;
                 lostCount++;
@@ -257,7 +287,7 @@ namespace simu5g
                 if (resultFile.is_open())
                 {
                     resultFile << i << ",0,0,0,0,0,-1,0," << elostValue << ","
-                               << deadlineMs << endl;
+                               << deadlineMs << ",0" << endl;
                 }
             }
         }
@@ -386,28 +416,10 @@ namespace simu5g
     {
         ApplicationBase::finish();
 
-        // Get average CQI from PHY layer (try nrPhy first, then phy)
+        // Get average CQI from PHY layer (phyUe_ already resolved in handleStartOperation)
         avgCqi_ = 0.0;
-        try {
-            cModule *ue = getParentModule();  // app[0] is directly inside ue[x]
-            if (ue != nullptr) {
-                cModule *cellularNic = ue->getSubmodule("cellularNic");
-                if (cellularNic != nullptr) {
-                    // Try NR PHY first, then LTE PHY
-                    cModule *phyModule = cellularNic->getSubmodule("nrPhy");
-                    if (phyModule == nullptr) {
-                        phyModule = cellularNic->getSubmodule("phy");
-                    }
-                    if (phyModule != nullptr) {
-                        phyUe_ = dynamic_cast<LtePhyUe*>(phyModule);
-                        if (phyUe_ != nullptr) {
-                            avgCqi_ = phyUe_->getAverageCqi(DL);
-                        }
-                    }
-                }
-            }
-        } catch (...) {
-            EV_WARN << "Could not retrieve average CQI from PHY layer" << endl;
+        if (phyUe_ != nullptr) {
+            avgCqi_ = phyUe_->getAverageCqi(DL);
         }
 
         detectLostFrames();
@@ -488,8 +500,13 @@ namespace simu5g
              return 1000.0;
         }
 
+        // First pass: collect all unique non-zero component values and track max MSE
+        // for the requested minComponents level
         double maxMSE = 0.0;
         int count = 0;
+        int smallestNonZero = INT_MAX;  // track smallest component level in file
+        double maxMSESmallest = 0.0;   // max MSE at that smallest level
+        int countSmallest = 0;
 
         while (std::getline(f, line))
         {
@@ -514,6 +531,20 @@ namespace simu5g
                 int components = std::stoi(fields[1]);
                 double mse = std::stod(fields[2]);
 
+                // Track the smallest non-zero component level in the file
+                if (components > 0 && components < smallestNonZero)
+                {
+                    smallestNonZero = components;
+                    maxMSESmallest = mse;
+                    countSmallest = 1;
+                }
+                else if (components == smallestNonZero)
+                {
+                    if (mse > maxMSESmallest)
+                        maxMSESmallest = mse;
+                    countSmallest++;
+                }
+
                 if (components == minComponents)
                 {
                     if (mse > maxMSE)
@@ -529,17 +560,28 @@ namespace simu5g
 
         f.close();
 
-        if (count == 0)
+        // If exact minComponents found, use it
+        if (count > 0)
         {
-            EV_WARN << "No rows with components=" << minComponents
-                    << " found in " << pcaFile << ", using default 1000.0" << endl;
-            return 1000.0;
+            std::cout << "XRTrafficReceiver::getMaxMSE: Found " << count
+                      << " rows at components=" << minComponents
+                      << ", maxMSE=" << maxMSE << endl;
+            return maxMSE;
         }
 
-        std::cout << "XRTrafficReceiver::getMaxMSE: Found " << count
-                  << " rows at components=" << minComponents
-                  << ", maxMSE=" << maxMSE << endl;
-        return maxMSE;
+        // Fallback: use the smallest non-zero component level found in file
+        if (countSmallest > 0)
+        {
+            std::cout << "XRTrafficReceiver::getMaxMSE: minComponents=" << minComponents
+                      << " not found. Falling back to smallest level components="
+                      << smallestNonZero << " (" << countSmallest
+                      << " rows, maxMSE=" << maxMSESmallest << ")" << endl;
+            return maxMSESmallest;
+        }
+
+        EV_WARN << "No valid component rows found in " << pcaFile
+                << ", using default 1000.0" << endl;
+        return 1000.0;
     }
 
 } // namespace simu5g

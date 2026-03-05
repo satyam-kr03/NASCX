@@ -5,6 +5,7 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <map>
 #include <string>
 #include <algorithm>
 #include "inet/applications/base/ApplicationBase.h"
@@ -36,10 +37,16 @@ namespace simu5g
 
         // Timing and frame management
         cMessage *sendTimer;
-        vector<FrameInfo> frames;
+        vector<FrameInfo> frames;            // Legacy: used in "fixed" mode
         int frame_number;
         double fps;
         simtime_t startTime;
+
+        // Per-frame dynamic selection data
+        map<int, map<int, FrameInfo>> allFrameData_;  // frame → components → FrameInfo
+        vector<int> frameNumbers_;                     // Sorted unique frame numbers
+        vector<int> availableComponents_;              // Available compression levels (excl. uncompressed)
+        string selectionMode_;                         // "fixed" or "random"
 
         // Jitter parameters
         double jitter_mean;
@@ -93,6 +100,7 @@ namespace simu5g
         void loadPCAData(const string &pcaFile);
         double tran_gau_num(double mean, double sd, double minv, double maxv);
         void sendPacket();
+        int getFrameCount() const;
         void scheduleNextPacket();
 
     public:

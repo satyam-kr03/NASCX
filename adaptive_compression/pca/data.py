@@ -1,93 +1,205 @@
 # pca/data.py
+#
+# Streaming video frame loading for memory-efficient PCA compression.
+# Frames are decoded lazily from disk, resized to a working resolution,
+# and yielded one at a time so that only a small batch resides in memory.
 
+import json
+import logging
+import subprocess
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, Generator, List, Optional, Set, Tuple
 
 import av
+import cv2
 import numpy as np
-import torch
-import torch.nn.functional as F
-from torch.utils.data import Dataset
 
-from . import DEFAULT_IMG_SIZE
+from . import DEFAULT_IMG_SIZE, RANDOM_SEED
 
 
-def read_video_pyav(container: av.container.InputContainer, indices: List[int]) -> np.ndarray:
+# ---------------------------------------------------------------------------
+# Video metadata
+# ---------------------------------------------------------------------------
+
+def get_video_info(video_path: Path) -> Tuple[int, int, int]:
     """
-    Read specific frames from a video container using PyAV.
+    Return (total_frames, height, width) for the given video.
 
-    Args:
-        container: PyAV input container
-        indices: List of frame indices to read
-
-    Returns:
-        Numpy array of frames in RGB format
+    Uses ffprobe to get a reliable frame count (the container metadata
+    field ``nb_frames`` is often absent for mp4/mkv downloaded via yt-dlp).
+    Falls back to full decode if ffprobe is unavailable.
     """
-    frames = []
-    container.seek(0)
-    start_index = indices[0]
-    end_index = indices[-1]
-    for i, frame in enumerate(container.decode(video=0)):
-        if i > end_index:
-            break
-        if i >= start_index and i in indices:
-            frames.append(frame)
-    return np.stack([x.to_ndarray(format="rgb24") for x in frames])
-
-
-class FrameDataset(Dataset):
-    """Dataset for video frames."""
-
-    def __init__(self, frames: np.ndarray, img_size: int = DEFAULT_IMG_SIZE) -> None:
-        self.frames = frames
-        self.img_size = img_size
-
-    def __len__(self) -> int:
-        return len(self.frames)
-
-    def __getitem__(self, idx: int) -> torch.Tensor:
-        frame = self.frames[idx]
-        frame = torch.from_numpy(frame).float() / 255.0
-        frame = frame.permute(2, 0, 1)
-        frame = F.interpolate(frame.unsqueeze(0), size=(self.img_size, self.img_size),
-                             mode='bilinear', align_corners=False).squeeze(0)
-        return frame
-
-
-def load_data(video_path: Path, train_ratio: float) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Load and split video frames into train and test sets.
-
-    Args:
-        video_path: Path to the video file
-        train_ratio: Ratio of frames to use for training (PCA fitting)
-
-    Returns:
-        Tuple of (train_frames, test_frames)
-    """
-    import logging
     try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "quiet",
+                "-select_streams", "v:0",
+                "-count_frames",
+                "-show_entries", "stream=nb_read_frames,height,width",
+                "-of", "json",
+                str(video_path),
+            ],
+            capture_output=True, text=True, check=True, timeout=600,
+        )
+        info = json.loads(result.stdout)
+        stream = info["streams"][0]
+        total_frames = int(stream["nb_read_frames"])
+        height = int(stream["height"])
+        width = int(stream["width"])
+        return total_frames, height, width
+
+    except (subprocess.CalledProcessError, FileNotFoundError, KeyError) as exc:
+        logging.warning(f"ffprobe frame-count failed ({exc}); falling back to PyAV decode")
         container = av.open(str(video_path))
-        total_frames = container.streams.video[0].frames
-        logging.info(f"Video has {total_frames} frames, resolution: {container.streams.video[0].width}x{container.streams.video[0].height}")
+        stream = container.streams.video[0]
+        height, width = stream.height, stream.width
+        container.seek(0)
+        total = sum(1 for _ in container.decode(video=0))
+        container.close()
+        return total, height, width
 
-        indices = list(range(total_frames))
-        all_frames = read_video_pyav(container, indices)
-        logging.info(f"Extracted {len(all_frames)} frames")
 
-        # Split data
-        indices_shuffled = np.random.permutation(len(all_frames))
-        train_size = int(train_ratio * len(all_frames))
-        train_indices = indices_shuffled[:train_size]
-        test_indices = indices_shuffled[train_size:]
+# ---------------------------------------------------------------------------
+# Per-frame encoded bitstream sizes (from ffprobe)
+# ---------------------------------------------------------------------------
 
-        frames_train = all_frames[train_indices]
-        frames_test = all_frames[test_indices]
+def get_encoded_frame_sizes(video_path: Path) -> List[Dict]:
+    """
+    Extract per-frame encoded packet sizes and picture types using ffprobe.
 
-        logging.info(f"Train: {len(frames_train)}, Test: {len(frames_test)}")
+    Returns a list of dicts, one per decoded frame in display order::
 
-        return frames_train, frames_test
+        [{"pkt_size": 35912, "pict_type": "I"}, ...]
 
-    except Exception as e:
-        logging.error(f"Error loading video data: {e}")
-        raise
+    This gives meaningful per-frame size variation (I vs P vs B frames)
+    that reflects frame complexity in the original codec.
+    """
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "quiet",
+            "-select_streams", "v:0",
+            "-show_entries", "frame=pkt_size,pict_type",
+            "-of", "json",
+            str(video_path),
+        ],
+        capture_output=True, text=True, check=True, timeout=600,
+    )
+    data = json.loads(result.stdout)
+    frames = []
+    for f in data.get("frames", []):
+        frames.append({
+            "pkt_size": int(f["pkt_size"]),
+            "pict_type": f.get("pict_type", "?"),
+        })
+    return frames
+
+
+# ---------------------------------------------------------------------------
+# Resize helper
+# ---------------------------------------------------------------------------
+
+def _resize_frame(frame: np.ndarray, img_size: int) -> np.ndarray:
+    """
+    Resize a frame to (img_size, img_size) using bilinear interpolation.
+
+    Args:
+        frame: (H, W, 3) uint8 numpy array.
+        img_size: Target square size.
+
+    Returns:
+        (img_size, img_size, 3) uint8 numpy array.
+    """
+    return cv2.resize(frame, (img_size, img_size), interpolation=cv2.INTER_LINEAR)
+
+
+# ---------------------------------------------------------------------------
+# Streaming frame generators
+# ---------------------------------------------------------------------------
+
+def _decode_frames(
+    video_path: Path,
+    wanted_indices: Optional[Set[int]] = None,
+    img_size: int = DEFAULT_IMG_SIZE,
+) -> Generator[Tuple[int, np.ndarray], None, None]:
+    """
+    Yield ``(frame_index, frame_rgb_uint8)`` tuples by decoding the video.
+
+    Each frame is resized to ``(img_size, img_size)`` before yielding.
+    If *wanted_indices* is given, only frames whose index is in the set
+    are yielded; all others are skipped (but still decoded because video
+    codecs require sequential access).
+    """
+    container = av.open(str(video_path))
+    container.seek(0)
+    for i, frame in enumerate(container.decode(video=0)):
+        if wanted_indices is not None and i not in wanted_indices:
+            continue
+        rgb = frame.to_ndarray(format="rgb24")
+        resized = _resize_frame(rgb, img_size)
+        yield i, resized
+    container.close()
+
+
+def sample_training_frames(
+    video_path: Path,
+    total_frames: int,
+    train_ratio: float,
+    img_size: int = DEFAULT_IMG_SIZE,
+    seed: int = RANDOM_SEED,
+) -> Tuple[np.ndarray, Set[int], Set[int]]:
+    """
+    Decode and return the training-subset frames as a single numpy array.
+
+    Frames are resized to ``(img_size, img_size)`` and selected via a
+    random permutation split.
+
+    Returns
+    -------
+    train_frames : np.ndarray
+        Shape ``(n_train, img_size, img_size, 3)`` uint8.
+    train_indices : set[int]
+        Frame indices used for training.
+    test_indices : set[int]
+        Frame indices reserved for testing.
+    """
+    rng = np.random.RandomState(seed)
+    perm = rng.permutation(total_frames)
+    train_size = int(train_ratio * total_frames)
+    if train_size == 0:
+        raise ValueError(
+            f"train_ratio={train_ratio} yields 0 training frames from "
+            f"{total_frames} total frames.  Increase train_ratio or use a "
+            "longer video."
+        )
+    train_idx_set = set(perm[:train_size].tolist())
+    test_idx_set = set(perm[train_size:].tolist())
+
+    if not test_idx_set:
+        logging.warning(
+            "No test frames after split (all frames used for training).  "
+            "Falling back to evaluating on the training set."
+        )
+        test_idx_set = train_idx_set.copy()
+
+    logging.info(f"Collecting {len(train_idx_set)} training frames (streaming, {img_size}x{img_size})...")
+    train_frames: List[np.ndarray] = []
+    for _, frame in _decode_frames(video_path, train_idx_set, img_size):
+        train_frames.append(frame)
+
+    train_array = np.stack(train_frames)
+    logging.info(f"Train: {len(train_idx_set)}, Test: {len(test_idx_set)}")
+    return train_array, train_idx_set, test_idx_set
+
+
+def stream_test_frames(
+    video_path: Path,
+    test_indices: Set[int],
+    img_size: int = DEFAULT_IMG_SIZE,
+) -> Generator[Tuple[int, np.ndarray], None, None]:
+    """
+    Yield ``(frame_index, frame_rgb_uint8)`` for every test-set frame.
+
+    Frames are resized to ``(img_size, img_size)``.
+    Only one frame is in memory at a time.
+    """
+    yield from _decode_frames(video_path, test_indices, img_size)

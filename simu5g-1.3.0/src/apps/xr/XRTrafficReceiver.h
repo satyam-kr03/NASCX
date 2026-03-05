@@ -32,6 +32,7 @@ namespace simu5g
         double effectiveError; // MSE if on time, Elost if late
         int fragmentsReceived;
         int totalFragments;
+        unsigned int cqi; // instantaneous DL CQI at frame reception
     };
 
     class XRTrafficReceiver : public ApplicationBase, public UdpSocket::ICallback

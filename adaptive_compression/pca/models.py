@@ -1,104 +1,95 @@
 # pca/models.py
+#
+# PCA-based video frame compressor using scikit-learn IncrementalPCA.
+
+import logging
+from typing import Tuple
 
 import numpy as np
 from sklearn.decomposition import IncrementalPCA
-from typing import Tuple
-
-from . import DEFAULT_IMG_SIZE
 
 
 class PCACompressor:
     """
     PCA-based image compressor.
-    
-    Fits PCA on flattened image channels and provides compression/reconstruction
-    at different component counts.
+
+    Fits IncrementalPCA on flattened, normalised (float32, [0,1]) frames
+    and provides compression / reconstruction at arbitrary component counts
+    up to *n_components*.
     """
 
-    def __init__(self, n_components: int = 16, img_size: int = DEFAULT_IMG_SIZE) -> None:
-        """
-        Initialize PCA compressor.
-        
-        Args:
-            n_components: Maximum number of principal components to keep
-            img_size: Image size (assumes square images)
-        """
+    def __init__(self, n_components: int = 80) -> None:
         self.n_components = n_components
-        self.img_size = img_size
+        self.frame_shape: Tuple[int, ...] = ()  # set during fit
         self.pca = IncrementalPCA(n_components=n_components)
         self.fitted = False
 
-    def fit(self, frames: np.ndarray) -> None:
+    # ------------------------------------------------------------------
+    # Fitting
+    # ------------------------------------------------------------------
+
+    def fit(self, frames: np.ndarray, batch_size: int = 100) -> None:
         """
-        Fit PCA on training frames.
-        
+        Fit PCA on training frames using incremental batches.
+
         Args:
-            frames: Training frames of shape (N, H, W, 3) with values 0-255
+            frames: Training frames, shape (N, H, W, 3), dtype uint8.
+            batch_size: Frames per partial_fit call.  Must be ≥ n_components.
         """
-        # Normalize and reshape frames for PCA
-        # Each frame becomes a row: (N, H*W*3)
         n_frames = len(frames)
-        frames_normalized = frames.astype(np.float32) / 255.0
-        
-        # Resize frames to img_size x img_size if needed
-        import torch
-        import torch.nn.functional as F
-        
-        resized_frames = []
-        for frame in frames_normalized:
-            frame_tensor = torch.from_numpy(frame).float().permute(2, 0, 1).unsqueeze(0)
-            frame_resized = F.interpolate(frame_tensor, size=(self.img_size, self.img_size),
-                                         mode='bilinear', align_corners=False)
-            resized_frames.append(frame_resized.squeeze(0).permute(1, 2, 0).numpy())
-        
-        frames_resized = np.stack(resized_frames)
-        
+        batch_size = max(batch_size, self.n_components)
+        batch_size = min(batch_size, n_frames)
+
+        frames_f32 = frames.astype(np.float32) / 255.0
+        self.frame_shape = frames_f32.shape[1:]  # (H, W, 3)
+
         # Flatten: (N, H*W*3)
-        frames_flat = frames_resized.reshape(n_frames, -1)
-        
-        # Fit PCA incrementally to handle memory
-        batch_size = min(100, n_frames)
+        frames_flat = frames_f32.reshape(n_frames, -1)
+        # Free the non-flat view immediately
+        del frames_f32
+
+        n_batches = (n_frames + batch_size - 1) // batch_size
         for i in range(0, n_frames, batch_size):
-            batch = frames_flat[i:i+batch_size]
+            batch = frames_flat[i : i + batch_size]
             self.pca.partial_fit(batch)
-        
+            batch_num = i // batch_size + 1
+            if batch_num % 5 == 0 or batch_num == n_batches:
+                logging.debug(f"  partial_fit batch {batch_num}/{n_batches}")
+
+        del frames_flat
         self.fitted = True
 
-    def compress_and_reconstruct(self, frame: np.ndarray, n_components: int) -> Tuple[np.ndarray, int]:
+    # ------------------------------------------------------------------
+    # Compression & reconstruction
+    # ------------------------------------------------------------------
+
+    def compress_and_reconstruct(
+        self, frame: np.ndarray, n_components: int
+    ) -> np.ndarray:
         """
-        Compress and reconstruct a frame using specified number of components.
-        
+        Compress and reconstruct a single frame via PCA truncation.
+
+        Standard PCA truncation: project onto the first *k* principal
+        components and reconstruct from those alone.  This is equivalent
+        to the best rank-k approximation in the L2 sense.
+
         Args:
-            frame: Single frame of shape (H, W, 3) normalized to [0, 1]
-            n_components: Number of principal components to use
-        
+            frame: Single frame, shape (H, W, 3), float32 in [0, 1].
+            n_components: Number of principal components to retain.
+
         Returns:
-            Tuple of (reconstructed_frame, compressed_size_bytes)
+            Reconstructed frame, same shape, clipped to [0, 1].
         """
         if not self.fitted:
             raise RuntimeError("PCA must be fitted before compression")
-        
-        # Limit n_components to available
+
         n_components = min(n_components, self.n_components)
-        
-        # Flatten frame
+
         frame_flat = frame.reshape(1, -1)
-        
-        # Transform to PCA space (all components)
-        transformed = self.pca.transform(frame_flat)
-        
-        # Zero out components beyond n_components
-        transformed_truncated = np.zeros_like(transformed)
-        transformed_truncated[0, :n_components] = transformed[0, :n_components]
-        
-        # Inverse transform
-        reconstructed_flat = self.pca.inverse_transform(transformed_truncated)
-        reconstructed = reconstructed_flat.reshape(self.img_size, self.img_size, 3)
-        
-        # Clip to valid range
-        reconstructed = np.clip(reconstructed, 0, 1)
-        
-        # Calculate compressed size (n_components float32 values)
-        size_bytes = n_components * self.img_size * 4  # 4 bytes per float32
-        
-        return reconstructed, size_bytes
+
+        # Direct sliced projection (standard PCA truncation)
+        components_k = self.pca.components_[:n_components]        # (k, n_features)
+        coefficients = (frame_flat - self.pca.mean_) @ components_k.T  # (1, k)
+        reconstructed_flat = coefficients @ components_k + self.pca.mean_  # (1, n_features)
+
+        return np.clip(reconstructed_flat.reshape(self.frame_shape), 0, 1)

@@ -41,6 +41,7 @@ namespace simu5g
             pcaFile = par("pcaFile").stdstringValue();
             compressionLevel_ = par("compressionLevel").intValue();
             selectionMode_ = par("selectionMode").stdstringValue();
+            prescribedFile_ = par("prescribedFile").stdstringValue();
 
             frame_number = 0;
             sendTimer = new cMessage("sendTimer");
@@ -55,6 +56,12 @@ namespace simu5g
 
             // Load PCA reconstruction data
             loadPCAData(pcaFile);
+
+            // Load prescribed schedule if in prescribed mode
+            if (selectionMode_ == "prescribed" && !prescribedFile_.empty())
+            {
+                loadPrescribedData(prescribedFile_);
+            }
             socket.setOutputGate(gate("socketOut"));
             socket.setCallback(this);
         }
@@ -179,6 +186,47 @@ namespace simu5g
             else
             {
                 EV_ERROR << "No data for frame " << frameNum << endl;
+                frame_number++;
+                return;
+            }
+        }
+        else if (selectionMode_ == "prescribed")
+        {
+            // Prescribed mode: look up components from prescribed schedule
+            int frameNum = frameNumbers_[frame_number];
+            auto prescIt = prescribedComponents_.find(frameNum);
+            int chosenComponents;
+            if (prescIt != prescribedComponents_.end())
+            {
+                chosenComponents = prescIt->second;
+            }
+            else
+            {
+                // Fallback: use middle compression level
+                chosenComponents = availableComponents_[availableComponents_.size() / 2];
+                EV_WARN << "No prescribed level for frame " << frameNum
+                        << ", using fallback=" << chosenComponents << endl;
+            }
+
+            auto frameIt = allFrameData_.find(frameNum);
+            if (frameIt != allFrameData_.end())
+            {
+                auto compIt = frameIt->second.find(chosenComponents);
+                if (compIt != frameIt->second.end())
+                {
+                    frameInfo = compIt->second;
+                }
+                else
+                {
+                    EV_ERROR << "No PCA data for frame " << frameNum
+                             << " at prescribed components=" << chosenComponents << endl;
+                    frame_number++;
+                    return;
+                }
+            }
+            else
+            {
+                EV_ERROR << "No PCA data for frame " << frameNum << endl;
                 frame_number++;
                 return;
             }
@@ -425,9 +473,64 @@ namespace simu5g
         }
     }
 
+    void XRTrafficSource::loadPrescribedData(const string &prescribedFile)
+    {
+        ifstream f(prescribedFile);
+        if (!f.is_open())
+        {
+            EV_ERROR << "Cannot open prescribed file: " << prescribedFile << endl;
+            error("Failed to open prescribed compression schedule file");
+            return;
+        }
+
+        string line;
+        // Skip header line (frame,components)
+        if (!getline(f, line))
+        {
+            EV_ERROR << "Empty prescribed file: " << prescribedFile << endl;
+            return;
+        }
+
+        int loaded = 0;
+        while (getline(f, line))
+        {
+            if (line.empty())
+                continue;
+
+            stringstream ss(line);
+            string field;
+            vector<string> fields;
+
+            while (getline(ss, field, ','))
+            {
+                field.erase(remove_if(field.begin(), field.end(), ::isspace), field.end());
+                fields.push_back(field);
+            }
+
+            if (fields.size() < 2)
+                continue;
+
+            try
+            {
+                int frameNum = stoi(fields[0]);
+                int components = stoi(fields[1]);
+                prescribedComponents_[frameNum] = components;
+                loaded++;
+            }
+            catch (const exception &e)
+            {
+                EV_WARN << "Error parsing prescribed file line: " << e.what() << endl;
+            }
+        }
+
+        f.close();
+
+        EV << "Loaded " << loaded << " prescribed compression levels from " << prescribedFile << endl;
+    }
+
     int XRTrafficSource::getFrameCount() const
     {
-        if (selectionMode_ == "random")
+        if (selectionMode_ == "random" || selectionMode_ == "prescribed")
             return (int)frameNumbers_.size();
         else
             return (int)frames.size();

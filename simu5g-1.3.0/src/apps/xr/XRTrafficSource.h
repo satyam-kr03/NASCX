@@ -46,7 +46,11 @@ namespace simu5g
         map<int, map<int, FrameInfo>> allFrameData_;  // frame → components → FrameInfo
         vector<int> frameNumbers_;                     // Sorted unique frame numbers
         vector<int> availableComponents_;              // Available compression levels (excl. uncompressed)
-        string selectionMode_;                         // "fixed" or "random"
+        string selectionMode_;                         // "fixed", "random", or "prescribed"
+
+        // Prescribed mode: frame_number → chosen components
+        map<int, int> prescribedComponents_;
+        string prescribedFile_;
 
         // Jitter parameters
         double jitter_mean;
@@ -98,6 +102,7 @@ namespace simu5g
 
         // Helper methods
         void loadPCAData(const string &pcaFile);
+        void loadPrescribedData(const string &prescribedFile);
         double tran_gau_num(double mean, double sd, double minv, double maxv);
         void sendPacket();
         int getFrameCount() const;

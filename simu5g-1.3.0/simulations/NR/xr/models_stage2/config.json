@@ -17,9 +17,9 @@
     375,
     400
   ],
-  "cqi_min": 6,
+  "cqi_min": 5,
   "cqi_max": 15,
-  "cqi_vocab_size": 10,
+  "cqi_vocab_size": 11,
   "cqi_embed_dim": 4,
   "hidden_dims": [
     256,
@@ -28,7 +28,8 @@
   "static_feat_names": [
     "meantrafficsize",
     "stdtrafficsize",
-    "frameComplexity"
+    "frameComplexity",
+    "frame_rate"
   ],
   "num_classes": 16
 }

@@ -42,7 +42,8 @@ TRIMMED_DIR = TRAFFIC_DIR / "trimmed"
 PCA_FILES = sorted(TRAFFIC_DIR.glob("pca_sweep_summary_*.csv"))
 
 MAX_FRAMES = 2000      # Only use first 2000 frames per video
-FPS = 60               # Frames per second
+FPS = 60               # Frames per second (default)
+FPS_OPTIONS = [45, 60, 72, 90, 120]  # Per-user frame rate choices
 SIM_TIME_LIMIT = 35    # seconds (>= 2000/60 ≈ 33.33s, with margin)
 DEADLINE_MS = 5.0      # Frame deadline in ms
 NUM_USERS_SWEEP = list(range(2, 11))  # 2..10 users
@@ -128,6 +129,12 @@ def assign_videos(num_users, video_names, seed=42):
     return assignments
 
 
+def assign_fps(num_users, seed=42):
+    """Assign a random frame rate to each user from FPS_OPTIONS."""
+    rng = random.Random(seed)
+    return [rng.choice(FPS_OPTIONS) for _ in range(num_users)]
+
+
 # ─── Step 4: Run a single simulation ────────────────────────────────────────
 
 def run_simulation(args):
@@ -135,7 +142,7 @@ def run_simulation(args):
     
     This function is called by the multiprocessing pool.
     """
-    num_users, repetition, video_assignments, trimmed_paths, run_dir, sim_time = args
+    num_users, repetition, video_assignments, fps_assignments, trimmed_paths, run_dir, sim_time = args
     
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -154,10 +161,12 @@ def run_simulation(args):
     # Add per-user overrides
     for i in range(num_users):
         video = video_assignments[i]
+        fps = fps_assignments[i]
         pca_rel = os.path.relpath(trimmed_paths[video], SCRIPT_DIR)
         result_file = str(run_dir / f"user_{i}.csv")
         # String values must be quoted for OMNeT++ command-line parsing
         cmd.append(f'--*.server.app[{i}].pcaFile="{pca_rel}"')
+        cmd.append(f'--*.server.app[{i}].fps={fps}')
         cmd.append(f'--*.ue[{i}].app[0].pcaFile="{pca_rel}"')
         cmd.append(f'--*.ue[{i}].app[0].resultFile="{result_file}"')
         cmd.append(f"--*.ue[{i}].app[0].expectedFrames={MAX_FRAMES}")
@@ -189,6 +198,7 @@ def run_simulation(args):
         "repetition": repetition,
         "run_dir": str(run_dir),
         "video_assignments": video_assignments,
+        "fps_assignments": fps_assignments,
     }
 
 
@@ -205,6 +215,7 @@ def collect_run_results(run_info, complexity_stats):
     num_users = run_info["num_users"]
     run_dir = Path(run_info["run_dir"])
     video_assignments = run_info["video_assignments"]
+    fps_assignments = run_info["fps_assignments"]
     
     # Read per-user result CSVs
     user_data = {}
@@ -264,6 +275,9 @@ def collect_run_results(run_info, complexity_stats):
             
             # Per-frame CQI (instantaneous DL CQI at frame reception time)
             row[prefix + "cqi"] = int(frame_row["cqi"]) if "cqi" in frame_row.index else 0
+            
+            # Frame rate assigned to this user
+            row[prefix + "frame_rate"] = fps_assignments[i]
         
         if not skip_frame:
             row["num_users"] = num_users
@@ -332,11 +346,12 @@ def main():
         for rep in range(args.repetitions):
             run_seed = args.seed + num_users * 100 + rep
             video_assignments = assign_videos(num_users, video_names, seed=run_seed)
+            fps_assignments = assign_fps(num_users, seed=run_seed + 1000)
             
             run_dir = RESULTS_DIR / f"dataset_n{num_users}_r{rep}"
 
             jobs.append((
-                num_users, rep, video_assignments, 
+                num_users, rep, video_assignments, fps_assignments,
                 {v: trimmed_paths[v] for v in video_names},
                 str(run_dir),
                 sim_time,
@@ -384,7 +399,8 @@ def main():
     max_users = max(r["num_users"] for r in completed_runs)
     for i in range(max_users):
         for suffix in ["meantrafficsize", "stdtrafficsize", "components",
-                        "effectiveError", "frameComplexity", "delay_ms", "cqi"]:
+                        "effectiveError", "frameComplexity", "delay_ms", "cqi",
+                        "frame_rate"]:
             col = f"user{i}_{suffix}"
             if col in dataset.columns:
                 user_cols.append(col)

@@ -48,7 +48,8 @@ class UserFeatures(BaseModel):
     meantrafficsize: float = Field(..., description="Mean traffic size of the user's video")
     stdtrafficsize: float  = Field(..., description="Std of traffic size")
     frameComplexity: float = Field(..., description="Frame complexity metric")
-    cqi: int               = Field(..., ge=6, le=15, description="Channel Quality Indicator (6–15)")
+    frame_rate: float      = Field(..., description="Video frame rate in fps (e.g. 45, 60, 72, 90, 120)")
+    cqi: int               = Field(..., ge=5, le=15, description="Channel Quality Indicator (5–15)")
 
 
 class PredictRequest(BaseModel):
@@ -145,13 +146,13 @@ async def predict(req: PredictRequest):
 
     # ── Build input tensors ───────────────────────────────────
     static_raw = np.array(
-        [[u.meantrafficsize, u.stdtrafficsize, u.frameComplexity] for u in req.users],
+        [[u.meantrafficsize, u.stdtrafficsize, u.frameComplexity, u.frame_rate] for u in req.users],
         dtype=np.float32,
-    )  # (N, 3)
+    )  # (N, 4)
     cqi_idx = np.array([u.cqi - cqi_min for u in req.users], dtype=np.int64)  # (N,)
 
     # Normalise
-    static_scaled = scaler.transform(static_raw).reshape(1, n_users, 3)
+    static_scaled = scaler.transform(static_raw).reshape(1, n_users, 4)
     x_cont = torch.tensor(static_scaled, dtype=torch.float32).to(DEVICE)
     x_cqi  = torch.tensor(cqi_idx.reshape(1, n_users), dtype=torch.long).to(DEVICE)
 

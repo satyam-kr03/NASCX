@@ -1378,4 +1378,50 @@ namespace simu5g
         return nullptr;
     }
 
+    void Binder::setXRCqi(MacNodeId nodeId, unsigned int cqi)
+    {
+        Enter_Method_Silent("setXRCqi");
+        xrMetrics_[nodeId].lastCqi = cqi;
+    }
+
+    unsigned int Binder::getXRCqi(MacNodeId nodeId) const
+    {
+        auto it = xrMetrics_.find(nodeId);
+        if (it != xrMetrics_.end())
+        {
+            return it->second.lastCqi;
+        }
+        return 0;
+    }
+
+    void Binder::setXRVideoStats(MacNodeId nodeId, double meanTrafficSize, double stdTrafficSize, double frameRate)
+    {
+        Enter_Method_Silent("setXRVideoStats");
+        xrVideoStats_[nodeId] = XRVideoStats(meanTrafficSize, stdTrafficSize, frameRate);
+        std::cout << "Binder::setXRVideoStats - UE " << nodeId
+                  << " mean=" << meanTrafficSize
+                  << " std=" << stdTrafficSize
+                  << " fps=" << frameRate << endl;
+    }
+
+    const XRVideoStats *Binder::getXRVideoStats(MacNodeId nodeId) const
+    {
+        auto it = xrVideoStats_.find(nodeId);
+        if (it != xrVideoStats_.end())
+        {
+            return &(it->second);
+        }
+        return nullptr;
+    }
+
+    std::vector<MacNodeId> Binder::getXRUserNodeIds() const
+    {
+        std::vector<MacNodeId> ids;
+        for (const auto &pair : xrVideoStats_)
+        {
+            ids.push_back(pair.first);
+        }
+        return ids;
+    }
+
 } // namespace simu5g

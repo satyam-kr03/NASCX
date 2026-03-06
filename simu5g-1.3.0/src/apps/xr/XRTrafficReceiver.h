@@ -7,6 +7,7 @@
 #include "inet/applications/base/ApplicationBase.h"
 #include "inet/transportlayer/contract/udp/UdpSocket.h"
 #include "inet/networklayer/common/L3Address.h"
+#include "common/binder/Binder.h"
 #include <fstream>
 
 // Forward declaration for PHY access
@@ -75,6 +76,10 @@ namespace simu5g
         // CQI tracking
         double avgCqi_;
         LtePhyUe* phyUe_;
+
+        // Binder reference for CQI feedback
+        Binder *binder_;
+        MacNodeId macNodeId_;
 
     protected:
         virtual void initialize(int stage) override;

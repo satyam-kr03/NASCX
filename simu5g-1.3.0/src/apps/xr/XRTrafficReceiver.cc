@@ -6,7 +6,9 @@
 #include "inet/networklayer/common/L3AddressTag_m.h"
 #include "inet/transportlayer/common/L4PortTag_m.h"
 #include "inet/common/lifecycle/NodeStatus.h"
+#include "inet/networklayer/common/L3AddressResolver.h"
 #include "stack/phy/LtePhyUe.h"
+#include "common/binder/Binder.h"
 #include <algorithm>
 #include <fstream>
 #include <iomanip>
@@ -32,7 +34,8 @@ namespace simu5g
 
     XRTrafficReceiver::XRTrafficReceiver()
         : expectedTotalFrames(100), nextExpectedFrame(1), trackingStarted(false), qoeComputed(false),
-          elostValue(1000.0), autoElost(true), avgCqi_(0.0), phyUe_(nullptr)
+          elostValue(1000.0), autoElost(true), avgCqi_(0.0), phyUe_(nullptr),
+          binder_(nullptr), macNodeId_(NODEID_NONE)
     {
     }
 
@@ -91,6 +94,37 @@ namespace simu5g
             std::cout << "XRTrafficReceiver: Initialized with deadline=" << deadlineMs
                       << "ms, expected frames=" << expectedTotalFrames
                       << ", Elost=" << elostValue << endl;
+        }
+        else if (stage == INITSTAGE_APPLICATION_LAYER)
+        {
+            // Resolve Binder and own MacNodeId for CQI feedback
+            binder_ = dynamic_cast<Binder *>(
+                getSimulation()->getModuleByPath("binder"));
+            if (binder_ == nullptr)
+            {
+                // Fallback: search for Binder type
+                cModule *networkModule = getSimulation()->getSystemModule();
+                for (cModule::SubmoduleIterator it(networkModule); !it.end(); ++it)
+                {
+                    Binder *b = dynamic_cast<Binder *>(*it);
+                    if (b != nullptr) { binder_ = b; break; }
+                }
+            }
+
+            // Resolve own MacNodeId from this UE's IP address
+            if (binder_ != nullptr)
+            {
+                cModule *ueModule = getParentModule();
+                inet::L3AddressResolver resolver;
+                inet::L3Address addr = resolver.addressOf(ueModule);
+                if (!addr.isUnspecified() && addr.getType() == inet::L3Address::IPv4)
+                {
+                    macNodeId_ = binder_->getMacNodeId(addr.toIpv4());
+                }
+            }
+
+            std::cout << "XRTrafficReceiver: Binder=" << (binder_ ? "resolved" : "null")
+                      << ", macNodeId=" << macNodeId_ << endl;
         }
     }
 
@@ -255,6 +289,12 @@ namespace simu5g
                       << "ms, onTime=" << onTime << ", MSE=" << mse
                       << ", error=" << effectiveError
                       << ", cqi=" << frameCqi << endl;
+
+            // Push CQI to Binder for real-time feedback to the source
+            if (binder_ != nullptr && macNodeId_ != NODEID_NONE)
+            {
+                binder_->setXRCqi(macNodeId_, frameCqi);
+            }
         }
 
         delete packet;

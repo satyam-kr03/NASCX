@@ -46,16 +46,34 @@ namespace simu5g
         double mse;
         int sizeBytes;
         simtime_t timestamp;
+        unsigned int lastCqi;  // Last reported DL CQI from the receiver
 
-        XRMetrics() : frameNumber(-1), mse(0.0), sizeBytes(0), timestamp(0.0) {}
-        XRMetrics(int fn, double m, int sz, simtime_t ts) : frameNumber(fn), mse(m), sizeBytes(sz), timestamp(ts) {}
+        XRMetrics() : frameNumber(-1), mse(0.0), sizeBytes(0), timestamp(0.0), lastCqi(0) {}
+        XRMetrics(int fn, double m, int sz, simtime_t ts) : frameNumber(fn), mse(m), sizeBytes(sz), timestamp(ts), lastCqi(0) {}
+    };
+
+    /**
+     * Video-level statistics for a UE, stored once at init.
+     * Used by XRTrafficSource in model mode to build /predict requests.
+     */
+    struct XRVideoStats
+    {
+        double meanTrafficSize;
+        double stdTrafficSize;
+        double frameRate;
+
+        XRVideoStats() : meanTrafficSize(0), stdTrafficSize(0), frameRate(60) {}
+        XRVideoStats(double m, double s, double fr) : meanTrafficSize(m), stdTrafficSize(s), frameRate(fr) {}
     };
 
     class Binder : public cSimpleModule
     {
     private:
-        // stores XR metrics (MSE, frame number) for each UE
+        // stores XR metrics (MSE, frame number, CQI) for each UE
         std::map<MacNodeId, XRMetrics> xrMetrics_;
+
+        // stores video-level stats for each UE (set once at init)
+        std::map<MacNodeId, XRVideoStats> xrVideoStats_;
 
         // maximum age for XR metrics to be considered fresh (in seconds)
         double xrMetricsFreshnessThreshold_;
@@ -247,6 +265,35 @@ namespace simu5g
          * @return Pointer to XRMetrics, or nullptr if not found
          */
         const XRMetrics *getXRMetrics(MacNodeId nodeId) const;
+
+        /**
+         * Updates the last reported CQI for a given UE.
+         * Called by XRTrafficReceiver when a frame completes.
+         */
+        void setXRCqi(MacNodeId nodeId, unsigned int cqi);
+
+        /**
+         * Retrieves the last reported CQI for a given UE.
+         * @return CQI value, or 0 if not available
+         */
+        unsigned int getXRCqi(MacNodeId nodeId) const;
+
+        /**
+         * Stores video-level statistics for a UE.
+         * Called once by XRTrafficSource at init.
+         */
+        void setXRVideoStats(MacNodeId nodeId, double meanTrafficSize, double stdTrafficSize, double frameRate);
+
+        /**
+         * Retrieves video-level statistics for a UE.
+         * @return Pointer to XRVideoStats, or nullptr if not set
+         */
+        const XRVideoStats *getXRVideoStats(MacNodeId nodeId) const;
+
+        /**
+         * Returns all UE MacNodeIds that have XR video stats registered.
+         */
+        std::vector<MacNodeId> getXRUserNodeIds() const;
 
         Binder() : lastUpdateUplinkTransmissionInfo_(0.0), lastUplinkTransmission_(0.0)
         {

@@ -52,6 +52,16 @@ namespace simu5g
         map<int, int> prescribedComponents_;
         string prescribedFile_;
 
+        // Model mode parameters
+        string modelServerUrl_;
+        int modelNumUsers_;
+        int modelDefaultCqi_;
+
+        // Per-frame complexity data (loaded from CSV)
+        map<int, double> frameComplexity_;   // frame_number → frame_complexity
+        double meanTrafficSize_;              // mean of frame_complexity across all frames
+        double stdTrafficSize_;               // std of frame_complexity
+
         // Jitter parameters
         double jitter_mean;
         double jitter_sd;
@@ -107,9 +117,12 @@ namespace simu5g
         void sendPacket();
         int getFrameCount() const;
         void scheduleNextPacket();
+        int queryModelServer(int frameNum);
+        std::string httpPost(const std::string& url, const std::string& jsonPayload);
 
     public:
-        XRTrafficSource() : sendTimer(nullptr), frame_number(0), fps(60.0), pcaFile("pca_selected.csv") {}
+        XRTrafficSource() : sendTimer(nullptr), frame_number(0), fps(60.0), pcaFile("pca_selected.csv"),
+                            meanTrafficSize_(0), stdTrafficSize_(0), modelNumUsers_(5), modelDefaultCqi_(10) {}
         virtual ~XRTrafficSource();
     };
 

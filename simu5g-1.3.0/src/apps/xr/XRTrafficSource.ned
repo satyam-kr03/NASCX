@@ -27,8 +27,13 @@ simple XRTrafficSource like IApp
         double startTime @unit(s) = default(0s);
         string pcaFile = default("pca_selected.csv");  // CSV file containing frame data
         int compressionLevel = default(0);  // Filter by components: 0=all, else filter (5,10,15,...,80)
-        string selectionMode = default("fixed");  // "fixed" = single compressionLevel, "random" = random per-frame, "prescribed" = per-frame from file
+        string selectionMode = default("fixed");  // "fixed" = single compressionLevel, "random" = random per-frame, "prescribed" = per-frame from file, "model" = inline model API
         string prescribedFile = default("");  // CSV mapping frame_number,components (used when selectionMode="prescribed")
+
+        // Model mode parameters (used when selectionMode="model")
+        string modelServerUrl = default("http://localhost:8000");  // Model API endpoint
+        int modelNumUsers = default(5);  // Total number of users in the simulation
+        int modelDefaultCqi = default(10);  // Default CQI before receiver feedback arrives
         
         // Jitter parameters (in milliseconds)
         double jitterMean @unit(ms) = default(0ms);

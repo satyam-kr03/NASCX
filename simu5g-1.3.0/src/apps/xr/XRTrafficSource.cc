@@ -1,5 +1,7 @@
 #include "XRTrafficSource.h"
 #include <set>
+#include <cmath>
+#include <cstdio>
 #include "inet/common/ModuleAccess.h"
 #include "inet/common/packet/Packet.h"
 #include "inet/common/TimeTag_m.h"
@@ -42,6 +44,9 @@ namespace simu5g
             compressionLevel_ = par("compressionLevel").intValue();
             selectionMode_ = par("selectionMode").stdstringValue();
             prescribedFile_ = par("prescribedFile").stdstringValue();
+            modelServerUrl_ = par("modelServerUrl").stdstringValue();
+            modelNumUsers_ = par("modelNumUsers").intValue();
+            modelDefaultCqi_ = par("modelDefaultCqi").intValue();
 
             frame_number = 0;
             sendTimer = new cMessage("sendTimer");
@@ -80,7 +85,18 @@ namespace simu5g
 
             EV << "XRTrafficSource initialized with " << frames.size()
                << " frames, FPS=" << fps << ", dest=" << destAddress
-               << ":" << destPort << ", macNodeId=" << macNodeId_ << endl;
+               << ":" << destPort << ", macNodeId=" << macNodeId_
+               << ", mode=" << selectionMode_ << endl;
+
+            // In model mode, store video stats in Binder so all sources
+            // can gather each other's features for batched model queries
+            if (selectionMode_ == "model" && binder_ != nullptr && macNodeId_ != NODEID_NONE)
+            {
+                binder_->setXRVideoStats(macNodeId_, meanTrafficSize_, stdTrafficSize_, fps);
+                std::cout << "XRTrafficSource: Stored video stats in Binder for UE "
+                          << macNodeId_ << " (mean=" << meanTrafficSize_
+                          << ", std=" << stdTrafficSize_ << ", fps=" << fps << ")" << endl;
+            }
         }
     }
 
@@ -227,6 +243,52 @@ namespace simu5g
             else
             {
                 EV_ERROR << "No PCA data for frame " << frameNum << endl;
+                frame_number++;
+                return;
+            }
+        }
+        else if (selectionMode_ == "model")
+        {
+            // Model mode: query the model API with live CQI from Binder
+            int frameNum = frameNumbers_[frame_number];
+            int chosenComponents = queryModelServer(frameNum);
+
+            auto frameIt = allFrameData_.find(frameNum);
+            if (frameIt != allFrameData_.end())
+            {
+                auto compIt = frameIt->second.find(chosenComponents);
+                if (compIt != frameIt->second.end())
+                {
+                    frameInfo = compIt->second;
+                }
+                else
+                {
+                    // Fallback: find closest available compression level
+                    int closest = availableComponents_[0];
+                    int minDist = abs(chosenComponents - closest);
+                    for (int c : availableComponents_)
+                    {
+                        int dist = abs(chosenComponents - c);
+                        if (dist < minDist) { minDist = dist; closest = c; }
+                    }
+                    auto closestIt = frameIt->second.find(closest);
+                    if (closestIt != frameIt->second.end())
+                    {
+                        frameInfo = closestIt->second;
+                        EV_WARN << "Model suggested components=" << chosenComponents
+                                << " not in data, using closest=" << closest << endl;
+                    }
+                    else
+                    {
+                        EV_ERROR << "No data for frame " << frameNum << endl;
+                        frame_number++;
+                        return;
+                    }
+                }
+            }
+            else
+            {
+                EV_ERROR << "No data for frame " << frameNum << endl;
                 frame_number++;
                 return;
             }
@@ -408,6 +470,17 @@ namespace simu5g
                 fi.mse = stod(fields[2]);
                 fi.size_bytes = stoi(fields[3]);
 
+                // Extract frame_complexity if available (column 4)
+                if (fields.size() >= 5)
+                {
+                    double fc = stod(fields[4]);
+                    // Store once per frame (same for all comp levels)
+                    if (frameComplexity_.find(fi.frame_number) == frameComplexity_.end())
+                    {
+                        frameComplexity_[fi.frame_number] = fc;
+                    }
+                }
+
                 // Always store in allFrameData_ for any selection mode
                 allFrameData_[fi.frame_number][fi.components] = fi;
 
@@ -471,6 +544,26 @@ namespace simu5g
             if (count > 0) avgMSE /= count;
             EV << "  Overall average MSE across all levels: " << avgMSE << endl;
         }
+
+        // Compute mean and std of frame_complexity for model mode
+        if (!frameComplexity_.empty())
+        {
+            double sumFC = 0;
+            for (const auto &p : frameComplexity_) sumFC += p.second;
+            meanTrafficSize_ = sumFC / frameComplexity_.size();
+
+            double sumSqDiff = 0;
+            for (const auto &p : frameComplexity_)
+            {
+                double diff = p.second - meanTrafficSize_;
+                sumSqDiff += diff * diff;
+            }
+            stdTrafficSize_ = sqrt(sumSqDiff / frameComplexity_.size());
+
+            EV << "  Video stats: meanTrafficSize=" << meanTrafficSize_
+               << ", stdTrafficSize=" << stdTrafficSize_
+               << ", frames with complexity=" << frameComplexity_.size() << endl;
+        }
     }
 
     void XRTrafficSource::loadPrescribedData(const string &prescribedFile)
@@ -530,7 +623,7 @@ namespace simu5g
 
     int XRTrafficSource::getFrameCount() const
     {
-        if (selectionMode_ == "random" || selectionMode_ == "prescribed")
+        if (selectionMode_ == "random" || selectionMode_ == "prescribed" || selectionMode_ == "model")
             return (int)frameNumbers_.size();
         else
             return (int)frames.size();
@@ -626,6 +719,178 @@ namespace simu5g
         }
 
         return NODEID_NONE;
+    }
+
+    std::string XRTrafficSource::httpPost(const std::string& url, const std::string& jsonPayload)
+    {
+        // Write payload to a temp file to avoid shell quoting issues
+        std::string tmpFile = "/tmp/xr_model_payload_" + std::to_string(getSimulation()->getUniqueNumber()) + ".json";
+        {
+            std::ofstream ofs(tmpFile);
+            ofs << jsonPayload;
+            ofs.close();
+        }
+
+        // Use wget (curl not always available)
+        std::string command = "wget -qO- --header='Content-Type: application/json' "
+                              "--post-file='" + tmpFile + "' '" + url + "' 2>/dev/null";
+
+        FILE *pipe = popen(command.c_str(), "r");
+        if (!pipe)
+        {
+            EV_ERROR << "httpPost: popen failed for " << url << endl;
+            std::remove(tmpFile.c_str());
+            return "";
+        }
+
+        std::string result;
+        char buffer[4096];
+        while (fgets(buffer, sizeof(buffer), pipe) != nullptr)
+        {
+            result += buffer;
+        }
+        int status = pclose(pipe);
+        std::remove(tmpFile.c_str());
+
+        if (status != 0)
+        {
+            EV_WARN << "httpPost: wget returned status " << status
+                    << " for " << url << endl;
+        }
+
+        return result;
+    }
+
+    int XRTrafficSource::queryModelServer(int frameNum)
+    {
+        if (binder_ == nullptr || macNodeId_ == NODEID_NONE)
+        {
+            EV_WARN << "queryModelServer: Binder not available, using default" << endl;
+            return availableComponents_[availableComponents_.size() / 2];
+        }
+
+        // Gather all XR users' node IDs from the Binder
+        std::vector<MacNodeId> allUsers = binder_->getXRUserNodeIds();
+        int numUsers = (int)allUsers.size();
+
+        // The model requires at least 2 users
+        if (numUsers < 2)
+        {
+            EV_WARN << "queryModelServer: Only " << numUsers
+                    << " users registered, need >= 2. Using fallback." << endl;
+            return availableComponents_[availableComponents_.size() / 2];
+        }
+
+        // Find our own index in the user list
+        int myIndex = -1;
+        for (int i = 0; i < numUsers; i++)
+        {
+            if (allUsers[i] == macNodeId_)
+            {
+                myIndex = i;
+                break;
+            }
+        }
+        if (myIndex < 0)
+        {
+            EV_WARN << "queryModelServer: Own macNodeId " << macNodeId_
+                    << " not found in Binder user list. Using fallback." << endl;
+            return availableComponents_[availableComponents_.size() / 2];
+        }
+
+        // Get this frame's complexity
+        double myFrameComplexity = meanTrafficSize_;  // fallback
+        auto fcIt = frameComplexity_.find(frameNum);
+        if (fcIt != frameComplexity_.end())
+        {
+            myFrameComplexity = fcIt->second;
+        }
+
+        // Build JSON payload: {"users": [{...}, {...}, ...]}
+        std::ostringstream json;
+        json << "{\"users\":[";
+        for (int i = 0; i < numUsers; i++)
+        {
+            MacNodeId uid = allUsers[i];
+            const XRVideoStats *stats = binder_->getXRVideoStats(uid);
+            unsigned int cqi = binder_->getXRCqi(uid);
+
+            double mean = stats ? stats->meanTrafficSize : 0;
+            double stdv = stats ? stats->stdTrafficSize : 0;
+            double frate = stats ? stats->frameRate : 60;
+
+            // For frame complexity: use own data if this is our user,
+            // otherwise use the mean (we don't have per-frame data for other users)
+            double fc = (uid == macNodeId_) ? myFrameComplexity : mean;
+
+            // Clamp CQI to model range [5, 15]
+            if (cqi == 0) cqi = (unsigned int)modelDefaultCqi_;
+            if (cqi < 5) cqi = 5;
+            if (cqi > 15) cqi = 15;
+
+            if (i > 0) json << ",";
+            json << "{\"meantrafficsize\":" << mean
+                 << ",\"stdtrafficsize\":" << stdv
+                 << ",\"frameComplexity\":" << fc
+                 << ",\"frame_rate\":" << frate
+                 << ",\"cqi\":" << cqi << "}";
+        }
+        json << "]}";
+
+        // Make HTTP request
+        std::string url = modelServerUrl_ + "/predict";
+        std::string response = httpPost(url, json.str());
+
+        if (response.empty())
+        {
+            EV_WARN << "queryModelServer: Empty response from " << url << endl;
+            return availableComponents_[availableComponents_.size() / 2];
+        }
+
+        // Parse response JSON to extract our user's optimal_components.
+        // Response format: {"predictions": [{"user_id": 0, "optimal_components": 200, ...}, ...]}
+        // Simple JSON extraction without a library:
+        int chosenComponents = availableComponents_[availableComponents_.size() / 2];
+
+        // Find the prediction for our user_id
+        std::string searchKey = "\"user_id\":" + std::to_string(myIndex);
+        size_t pos = response.find(searchKey);
+        if (pos != std::string::npos)
+        {
+            // Find "optimal_components": NNN after this position
+            std::string compKey = "\"optimal_components\":";
+            size_t compPos = response.find(compKey, pos);
+            if (compPos != std::string::npos)
+            {
+                compPos += compKey.length();
+                // Skip whitespace
+                while (compPos < response.size() && (response[compPos] == ' ' || response[compPos] == '\t'))
+                    compPos++;
+                // Read the integer
+                std::string numStr;
+                while (compPos < response.size() && std::isdigit(response[compPos]))
+                {
+                    numStr += response[compPos];
+                    compPos++;
+                }
+                if (!numStr.empty())
+                {
+                    chosenComponents = std::stoi(numStr);
+                }
+            }
+        }
+        else
+        {
+            EV_WARN << "queryModelServer: Could not find user_id=" << myIndex
+                    << " in response: " << response.substr(0, 200) << endl;
+        }
+
+        EV << "queryModelServer: frame=" << frameNum
+           << " myIndex=" << myIndex
+           << " cqi=" << binder_->getXRCqi(macNodeId_)
+           << " → components=" << chosenComponents << endl;
+
+        return chosenComponents;
     }
 
 } // namespace simu5g

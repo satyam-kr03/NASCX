@@ -2,14 +2,11 @@
 """
 Comparison Script: Model-Based Adaptive vs Static Compression Levels.
 
-Pipeline:
-  1. Run a "probe" simulation with a mid-range fixed compression level
-     to obtain per-frame CQI for each user.
-  2. Query the model server with per-frame (CQI + video features) to
-     obtain the model's prescribed compression schedule per user.
-  3. Run a "model" simulation using prescribed schedules.
-  4. Run static simulations for every compression level (25,50,...,400).
-  5. Collect effective-error results from all runs and write a comparison CSV.
+Simplified pipeline (inline model queries during simulation):
+  1. Run a "model" simulation using selectionMode="model" — the source
+     reads live CQI from the Binder and queries the model API each frame.
+  2. Run static simulations for every compression level (25,50,...,400).
+  3. Collect effective-error results from all runs and write a comparison CSV.
 
 Usage:
     python run_comparison.py [--num-users N] [--sim-time S] [--seed SEED]
@@ -40,7 +37,6 @@ RESULTS_DIR = SCRIPT_DIR / "comparison_results"
 DATASET_DIR = SCRIPT_DIR / "datasets"
 
 COMP_LEVELS = list(range(25, 401, 25))       # 25, 50, 75, ... 400
-PROBE_LEVEL = 200                             # Mid-range probe level
 MAX_FRAMES = 2000
 FPS = 60
 DEADLINE_MS = 5.0
@@ -76,20 +72,6 @@ def pca_path_for_video(video: str) -> Path:
     return TRIMMED_DIR / f"pca_sweep_summary_{video}.csv"
 
 
-def compute_video_stats(video: str) -> dict:
-    """Compute mean/std of frame_complexity and per-frame complexity map."""
-    df = pd.read_csv(pca_path_for_video(video))
-    frame_df = df.drop_duplicates(subset="frame")[["frame", "frame_complexity"]].copy()
-    frame_df = frame_df.sort_values("frame").head(MAX_FRAMES)
-    return {
-        "mean_traffic_size": float(frame_df["frame_complexity"].mean()),
-        "std_traffic_size": float(frame_df["frame_complexity"].std()),
-        "complexity_per_frame": dict(
-            zip(frame_df["frame"].astype(int), frame_df["frame_complexity"].astype(float))
-        ),
-    }
-
-
 def build_sim_cmd(
     config: str,
     num_users: int,
@@ -101,6 +83,8 @@ def build_sim_cmd(
     selection_mode: str = "fixed",
     compression_level: int = 0,
     prescribed_files: dict[int, Path] | None = None,
+    model_server_url: str = "",
+    fps_assignments: list[int] | None = None,
 ) -> list[str]:
     """Build the OMNeT++ command line for one simulation run."""
     cmd = [
@@ -122,6 +106,15 @@ def build_sim_cmd(
         cmd.append(f'--*.server.app[{i}].pcaFile="{pca_rel}"')
         cmd.append(f'--*.server.app[{i}].selectionMode="{selection_mode}"')
         cmd.append(f"--*.server.app[{i}].compressionLevel={compression_level}")
+
+        # Model mode: pass server URL and user count
+        if selection_mode == "model":
+            cmd.append(f'--*.server.app[{i}].modelServerUrl="{model_server_url}"')
+            cmd.append(f"--*.server.app[{i}].modelNumUsers={num_users}")
+
+        # Set per-user FPS if provided
+        if fps_assignments:
+            cmd.append(f"--*.server.app[{i}].fps={fps_assignments[i]}")
 
         if selection_mode == "prescribed" and prescribed_files and i in prescribed_files:
             cmd.append(f'--*.server.app[{i}].prescribedFile="{prescribed_files[i]}"')
@@ -182,134 +175,25 @@ def compute_mean_effective_error(df: pd.DataFrame) -> float:
     return float(df["effectiveError"].mean())
 
 
-# ── Step 1: Probe simulation ─────────────────────────────────────────────────
-
-def run_probe(num_users, sim_time, seed, video_assignments):
-    """Run a fixed-level probe sim to capture per-frame CQI."""
-    run_dir = RESULTS_DIR / "probe"
-    if run_dir.exists():
-        shutil.rmtree(run_dir)
-
-    cmd = build_sim_cmd(
-        config="XR-DL-RandomCL",
-        num_users=num_users,
-        sim_time=sim_time,
-        seed=seed,
-        video_assignments=video_assignments,
-        run_dir=run_dir,
-        selection_mode="fixed",
-        compression_level=PROBE_LEVEL,
-    )
-
-    ok = run_sim(cmd, run_dir, f"Probe (fixed@{PROBE_LEVEL})")
-    if not ok:
-        return None
-    return read_user_results(run_dir, num_users)
-
-
-# ── Step 2: Query model server ───────────────────────────────────────────────
-
-def query_model_for_frames(
-    num_users: int,
-    video_assignments: list[str],
-    video_stats: dict[str, dict],
-    probe_data: dict[int, pd.DataFrame],
-    server_url: str,
-    fps_assignments: list[int] | None = None,
-) -> dict[int, pd.DataFrame]:
-    """
-    For each frame, build per-user features and query the model server.
-    Returns per-user DataFrames with columns [frame, components].
-    """
-    if fps_assignments is None:
-        fps_assignments = [FPS] * num_users
-    # Build per-frame CQI lookup from probe results
-    user_cqi = {}
-    for i, df in probe_data.items():
-        cqi_map = dict(zip(df["frameNumber"].astype(int), df["cqi"].astype(int)))
-        user_cqi[i] = cqi_map
-
-    # Collect all frame numbers present across all users
-    all_frames = set()
-    for i in range(num_users):
-        all_frames |= set(probe_data[i]["frameNumber"].astype(int))
-    frame_list = sorted(all_frames)
-
-    # Build prescribed schedule per user
-    prescribed: dict[int, list[dict]] = {i: [] for i in range(num_users)}
-
-    # Process in batches (one model call per frame)
-    batch_size = 200
-    total = len(frame_list)
-    print(f"  Querying model for {total} frames ({num_users} users) ...")
-
-    for batch_start in range(0, total, batch_size):
-        batch_frames = frame_list[batch_start : batch_start + batch_size]
-
-        for frame_num in batch_frames:
-            users_payload = []
-            valid = True
-            for i in range(num_users):
-                video = video_assignments[i]
-                stats = video_stats[video]
-                cqi = user_cqi.get(i, {}).get(frame_num, 10)
-                # Clamp CQI to model's range [5, 15]
-                cqi = max(5, min(15, cqi))
-
-                fc = stats["complexity_per_frame"].get(frame_num, 0.0)
-
-                users_payload.append({
-                    "meantrafficsize": stats["mean_traffic_size"],
-                    "stdtrafficsize": stats["std_traffic_size"],
-                    "frameComplexity": fc,
-                    "frame_rate": fps_assignments[i],
-                    "cqi": cqi,
-                })
-
-            try:
-                resp = requests.post(
-                    f"{server_url}/predict",
-                    json={"users": users_payload},
-                    timeout=5,
-                )
-                resp.raise_for_status()
-                result = resp.json()
-
-                for pred in result["predictions"]:
-                    uid = pred["user_id"]
-                    comp = pred["optimal_components"]
-                    prescribed[uid].append({"frame": frame_num, "components": comp})
-            except Exception as e:
-                # On failure, fall back to probe level
-                for i in range(num_users):
-                    prescribed[i].append({"frame": frame_num, "components": PROBE_LEVEL})
-
-        pct = min(100, (batch_start + len(batch_frames)) / total * 100)
-        print(f"    {pct:.0f}% ({batch_start + len(batch_frames)}/{total})", flush=True)
-
-    return {i: pd.DataFrame(prescribed[i]) for i in range(num_users)}
-
-
-# ── Step 3: Write prescribed CSV files and run model sim ─────────────────────
+# ── Step 1: Model simulation (inline, no probe needed) ──────────────────────
 
 def run_model_sim(
     num_users: int,
     sim_time: int,
     seed: int,
     video_assignments: list[str],
-    prescribed_dfs: dict[int, pd.DataFrame],
+    server_url: str,
+    fps_assignments: list[int] | None = None,
 ):
-    """Write prescribed CSVs and run the model-driven simulation."""
+    """Run the model-driven simulation using selectionMode='model'.
+    
+    The XRTrafficSource reads live CQI from the Binder and queries the
+    model API server each frame — no probe simulation needed.
+    """
     run_dir = RESULTS_DIR / "model"
     if run_dir.exists():
         shutil.rmtree(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-
-    prescribed_files: dict[int, Path] = {}
-    for i in range(num_users):
-        p = run_dir / f"prescribed_user_{i}.csv"
-        prescribed_dfs[i].to_csv(p, index=False)
-        prescribed_files[i] = p
 
     cmd = build_sim_cmd(
         config="XR-DL-RandomCL",
@@ -318,18 +202,19 @@ def run_model_sim(
         seed=seed,
         video_assignments=video_assignments,
         run_dir=run_dir,
-        selection_mode="prescribed",
+        selection_mode="model",
         compression_level=0,
-        prescribed_files=prescribed_files,
+        model_server_url=server_url,
+        fps_assignments=fps_assignments,
     )
 
-    ok = run_sim(cmd, run_dir, "Model (prescribed)")
+    ok = run_sim(cmd, run_dir, "Model (inline)")
     if not ok:
         return None
     return read_user_results(run_dir, num_users)
 
 
-# ── Step 4: Run static simulations ───────────────────────────────────────────
+# ── Step 2: Run static simulations ───────────────────────────────────────────
 
 def run_static_sims(
     num_users: int,
@@ -337,6 +222,7 @@ def run_static_sims(
     seed: int,
     video_assignments: list[str],
     levels: list[int] | None = None,
+    fps_assignments: list[int] | None = None,
 ) -> dict[int, dict[int, pd.DataFrame]]:
     """
     Run one simulation per static compression level.
@@ -360,6 +246,7 @@ def run_static_sims(
             run_dir=run_dir,
             selection_mode="fixed",
             compression_level=cl,
+            fps_assignments=fps_assignments,
         )
 
         ok = run_sim(cmd, run_dir, f"Static CL={cl}")
@@ -369,7 +256,7 @@ def run_static_sims(
     return results
 
 
-# ── Step 5: Assemble comparison results ──────────────────────────────────────
+# ── Step 3: Assemble comparison results ──────────────────────────────────────
 
 def assemble_comparison(
     num_users: int,
@@ -455,11 +342,11 @@ def main():
 
     print("=" * 65)
     print("  Model vs Static Compression Comparison")
+    print("  (Inline model queries — no probe simulation)")
     print("=" * 65)
     print(f"  Users:           {num_users}")
     print(f"  Sim time:        {sim_time}s")
     print(f"  Seed:            {seed}")
-    print(f"  Probe level:     {PROBE_LEVEL}")
     print(f"  Static levels:   {COMP_LEVELS[0]}-{COMP_LEVELS[-1]} "
           f"(step 25, {len(COMP_LEVELS)} sims)")
     print(f"  Model server:    {server_url}")
@@ -472,18 +359,13 @@ def main():
     for i, v in enumerate(video_assignments):
         print(f"    User {i}: {v}  ({fps_assignments[i]} fps)")
 
-    # Pre-compute video stats (for model queries)
-    video_stats = {}
-    for v in set(video_assignments):
-        video_stats[v] = compute_video_stats(v)
-
     if args.dry_run:
-        print(f"\n[DRY RUN] Would run {1 + 1 + len(COMP_LEVELS)} simulations.")
-        print("  1x probe, 1x model, " + f"{len(COMP_LEVELS)}x static")
+        print(f"\n[DRY RUN] Would run {1 + len(COMP_LEVELS)} simulations.")
+        print("  1x model (inline), " + f"{len(COMP_LEVELS)}x static")
         return
 
     # Check model server health
-    print(f"\n[0/5] Checking model server ...")
+    print(f"\n[0/3] Checking model server ...")
     try:
         r = requests.get(f"{server_url}/health", timeout=5)
         r.raise_for_status()
@@ -499,46 +381,25 @@ def main():
         print("  Start the server with: python model_server.py")
         return
 
-    # ── Step 1: Probe simulation ──────────────────────────────────────────
-    print(f"\n[1/5] Running probe simulation (fixed CL={PROBE_LEVEL}) ...")
-    probe_data = run_probe(num_users, sim_time, seed, video_assignments)
-    if probe_data is None:
-        print("[ERROR] Probe simulation failed. Aborting.")
-        return
-    for i in range(num_users):
-        if i in probe_data:
-            n = len(probe_data[i])
-            cqi_mean = probe_data[i]["cqi"].mean() if "cqi" in probe_data[i].columns else 0
-            print(f"    User {i}: {n} frames, avg CQI={cqi_mean:.1f}")
-
-    # ── Step 2: Query model ───────────────────────────────────────────────
-    print(f"\n[2/5] Querying model server for prescribed levels ...")
-    prescribed_dfs = query_model_for_frames(
-        num_users, video_assignments, video_stats, probe_data, server_url,
-        fps_assignments=fps_assignments,
-    )
-    for i in range(num_users):
-        vc = prescribed_dfs[i]["components"].value_counts()
-        print(f"    User {i}: {len(prescribed_dfs[i])} frames, "
-              f"top levels: {dict(vc.head(3))}")
-
-    # ── Step 3: Model simulation ──────────────────────────────────────────
-    print(f"\n[3/5] Running model (prescribed) simulation ...")
+    # ── Step 1: Model simulation (inline) ─────────────────────────────────
+    print(f"\n[1/3] Running model simulation (inline, selectionMode=model) ...")
     model_data = run_model_sim(
-        num_users, sim_time, seed, video_assignments, prescribed_dfs
+        num_users, sim_time, seed, video_assignments, server_url,
+        fps_assignments=fps_assignments,
     )
     if model_data is None:
         print("[WARN] Model simulation failed.")
 
-    # ── Step 4: Static simulations ────────────────────────────────────────
-    print(f"\n[4/5] Running {len(COMP_LEVELS)} static simulations ...")
+    # ── Step 2: Static simulations ────────────────────────────────────────
+    print(f"\n[2/3] Running {len(COMP_LEVELS)} static simulations ...")
     static_data = run_static_sims(
-        num_users, sim_time, seed, video_assignments
+        num_users, sim_time, seed, video_assignments,
+        fps_assignments=fps_assignments,
     )
     print(f"  Completed: {len(static_data)}/{len(COMP_LEVELS)}")
 
-    # ── Step 5: Assemble results ──────────────────────────────────────────
-    print(f"\n[5/5] Assembling comparison results ...")
+    # ── Step 3: Assemble results ──────────────────────────────────────────
+    print(f"\n[3/3] Assembling comparison results ...")
     out_csv = RESULTS_DIR / "comparison.csv"
     result_df = assemble_comparison(
         num_users, video_assignments, model_data, static_data, out_csv

@@ -5,7 +5,7 @@ __version__ = "2.0.0"
 # Constants
 RANDOM_SEED = 42
 DEFAULT_IMG_SIZE = 224  # working resolution for PCA (matches autoencoder)
-DEFAULT_TRAIN_RATIO = 0.15
+DEFAULT_TRAIN_RATIO = 0.30
 
 # Maximum components to fit
 DEFAULT_MAX_COMPONENTS = 400

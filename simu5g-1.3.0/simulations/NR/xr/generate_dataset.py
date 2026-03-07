@@ -41,7 +41,7 @@ TRIMMED_DIR = TRAFFIC_DIR / "trimmed"
 # PCA sweep summary files (one per video)
 PCA_FILES = sorted(TRAFFIC_DIR.glob("pca_sweep_summary_*.csv"))
 
-MAX_FRAMES = 2000      # Only use first 2000 frames per video
+MAX_FRAMES = 1000      # Only use first 2000 frames per video
 FPS = 60               # Frames per second (default)
 FPS_OPTIONS = [45, 60, 72, 90, 120]  # Per-user frame rate choices
 SIM_TIME_LIMIT = 35    # seconds (>= 2000/60 ≈ 33.33s, with margin)
@@ -180,7 +180,7 @@ def run_simulation(args):
                 cwd=str(SCRIPT_DIR),
                 stdout=log_f,
                 stderr=subprocess.STDOUT,
-                timeout=600,  # 10 min timeout per sim
+                timeout=6000,  # 10 min timeout per sim
             )
         
         if result.returncode != 0:

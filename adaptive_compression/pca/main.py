@@ -22,7 +22,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--video-path", type=Path,
-        default=Path("../data/yt360-videos/Avicii-Waiting-For-Love.mp4"),
+        default=Path("../data/yt360-videos/dino.mp4"),
         help="Path to the input video file",
     )
     parser.add_argument(

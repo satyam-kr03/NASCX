@@ -36,8 +36,8 @@ os.makedirs(STAGE2_DIR, exist_ok=True)
 COMP_LEVELS     = list(range(25, 401, 25))   # 16 levels
 COMP_TO_IDX     = {c: i for i, c in enumerate(COMP_LEVELS)}
 NUM_COMP_LEVELS = len(COMP_LEVELS)
-CQI_MIN, CQI_MAX = 5, 15
-CQI_VOCAB_SIZE  = CQI_MAX - CQI_MIN + 1     # 11
+CQI_MIN, CQI_MAX = 3, 15
+CQI_VOCAB_SIZE  = CQI_MAX - CQI_MIN + 1     # 13
 CQI_EMBED_DIM   = 4
 
 # Stage 1 config (must match model.ipynb)

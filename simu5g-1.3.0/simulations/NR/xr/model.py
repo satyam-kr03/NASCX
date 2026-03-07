@@ -26,9 +26,9 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 
 COMP_LEVELS     = list(range(25, 401, 25))   # 16 levels: 25, 50, …, 400
 NUM_COMP_LEVELS = len(COMP_LEVELS)
-CQI_MIN         = 5                          # min CQI in dataset
+CQI_MIN         = 3                          # min CQI in dataset
 CQI_MAX         = 15                         # max CQI in dataset
-CQI_VOCAB_SIZE  = CQI_MAX - CQI_MIN + 1     # 11 bins (indices 0-10)
+CQI_VOCAB_SIZE  = CQI_MAX - CQI_MIN + 1     # 13 bins (indices 0-12)
 CQI_EMBED_DIM   = 4
 HIDDEN_DIMS     = [256, 128, 64]
 BATCH_SIZE      = 256

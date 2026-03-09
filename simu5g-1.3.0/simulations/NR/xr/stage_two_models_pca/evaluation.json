@@ -1,0 +1,65 @@
+{
+  "2": {
+    "top1_accuracy": 0.9009661835748792,
+    "top3_accuracy": 0.9685990338164251,
+    "oracle_mean_error": 128.11782843824747,
+    "s2_mean_error": 128.31226671836225,
+    "random_mean_error": 174.75982122835904
+  },
+  "3": {
+    "top1_accuracy": 0.9470899470899471,
+    "top3_accuracy": 0.9805996472663139,
+    "oracle_mean_error": 83.40166388869916,
+    "s2_mean_error": 83.50274716987812,
+    "random_mean_error": 125.42481454045264
+  },
+  "4": {
+    "top1_accuracy": 0.8149171270718232,
+    "top3_accuracy": 0.9116022099447514,
+    "oracle_mean_error": 88.882576071755,
+    "s2_mean_error": 89.04414556698246,
+    "random_mean_error": 124.35772311819193
+  },
+  "5": {
+    "top1_accuracy": 0.7234567901234568,
+    "top3_accuracy": 0.8012345679012346,
+    "oracle_mean_error": 114.83338313043853,
+    "s2_mean_error": 115.9482649826709,
+    "random_mean_error": 139.94101874269086
+  },
+  "6": {
+    "top1_accuracy": 0.9479166666666666,
+    "top3_accuracy": 0.9640151515151515,
+    "oracle_mean_error": 85.81263970786875,
+    "s2_mean_error": 85.97415327845198,
+    "random_mean_error": 129.93406266335285
+  },
+  "7": {
+    "top1_accuracy": 0.9667207792207793,
+    "top3_accuracy": 0.9797077922077922,
+    "oracle_mean_error": 90.30068508951695,
+    "s2_mean_error": 90.63228983654605,
+    "random_mean_error": 137.02391685835727
+  },
+  "8": {
+    "top1_accuracy": 0.8820621468926554,
+    "top3_accuracy": 0.9209039548022598,
+    "oracle_mean_error": 94.20023846255857,
+    "s2_mean_error": 94.96766064833787,
+    "random_mean_error": 128.88306713306298
+  },
+  "9": {
+    "top1_accuracy": 0.9107257546563905,
+    "top3_accuracy": 0.9588953114964676,
+    "oracle_mean_error": 77.50778585469486,
+    "s2_mean_error": 78.00024854210453,
+    "random_mean_error": 124.28089029481185
+  },
+  "10": {
+    "top1_accuracy": 0.9873417721518988,
+    "top3_accuracy": 1.0,
+    "oracle_mean_error": 61.691132508048526,
+    "s2_mean_error": 61.744297161585166,
+    "random_mean_error": 93.89578888929343
+  }
+}

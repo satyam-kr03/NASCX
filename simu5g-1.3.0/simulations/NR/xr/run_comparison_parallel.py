@@ -373,8 +373,8 @@ def main():
                         help=f"Model server URL (default: {MODEL_SERVER_URL})")
     parser.add_argument("--dry-run", action="store_true",
                         help="Show plan without running simulations")
-    parser.add_argument("--timeout", type=int, default=600,
-                        help="Per-simulation timeout in seconds (default: 600)")
+    parser.add_argument("--timeout", type=int, default=6000,
+                        help="Per-simulation timeout in seconds (default: 6000)")
     parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS,
                         help="Max parallel worker processes (default: cpu_count)")
     args = parser.parse_args()

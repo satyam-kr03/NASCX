@@ -500,18 +500,18 @@ print(f"{'Config':>8s}  {'Top-1':>6s}  {'Top-3':>6s}  {'Oracle err':>10s}  "
 print("-" * 75)
 
 # time consuming part so commenting out for now — will run after demo section
-# for n_u in range(2, 11):
-#     _, _, test_ds = s2_datasets[n_u]
-#     sc, cq, ol, ae, oc, actual = label_data[n_u]
-#     res = evaluate_selector(
-#         s2_models[n_u], s1_models[n_u], test_ds,
-#         sc, cq, ae, global_scaler, static_scaler
-#     )
-#     eval_results[n_u] = res
-#     ratio = res['s2_err_mean'] / res['oracle_err_mean']
-#     print(f"{n_u:>8d}  {res['top1_acc']:>6.1%}  {res['top3_acc']:>6.1%}  "
-#           f"{res['oracle_err_mean']:>10.2f}  {res['s2_err_mean']:>10.2f}  "
-#           f"{res['random_err_mean']:>10.2f}  {ratio:>9.2f}×")
+for n_u in range(2, 11):
+    _, _, test_ds = s2_datasets[n_u]
+    sc, cq, ol, ae, oc, actual = label_data[n_u]
+    res = evaluate_selector(
+        s2_models[n_u], s1_models[n_u], test_ds,
+        sc, cq, ae, global_scaler, static_scaler
+    )
+    eval_results[n_u] = res
+    ratio = res['s2_err_mean'] / res['oracle_err_mean']
+    print(f"{n_u:>8d}  {res['top1_acc']:>6.1%}  {res['top3_acc']:>6.1%}  "
+          f"{res['oracle_err_mean']:>10.2f}  {res['s2_err_mean']:>10.2f}  "
+          f"{res['random_err_mean']:>10.2f}  {ratio:>9.2f}×")
 
 # %%
 # ── Training curves ───────────────────────────────────────────
@@ -606,11 +606,11 @@ def benchmark_inference(n_u, n_iters=500):
     return s2_time, s1_time, fwd_passes_s1
 
 
-print(f"{'Config':>8s}  {'S2 (μs)':>10s}  {'S1+CD (μs)':>12s}  {'S1 fwd passes':>14s}  {'Speedup':>8s}")
-print("-" * 65)
-for n_u in range(2, 11):
-    s2_t, s1_t, fwd = benchmark_inference(n_u, n_iters=300)
-    print(f"{n_u:>8d}  {s2_t:>10.1f}  {s1_t:>12.1f}  {fwd:>14d}  {s1_t/s2_t:>8.0f}×")
+# print(f"{'Config':>8s}  {'S2 (μs)':>10s}  {'S1+CD (μs)':>12s}  {'S1 fwd passes':>14s}  {'Speedup':>8s}")
+# print("-" * 65)
+# for n_u in range(2, 11):
+#     s2_t, s1_t, fwd = benchmark_inference(n_u, n_iters=300)
+#     print(f"{n_u:>8d}  {s2_t:>10.1f}  {s1_t:>12.1f}  {fwd:>14d}  {s1_t/s2_t:>8.0f}×")
 
 # %% [markdown]
 # ## 7. Demo: Single-TTI Inference

@@ -15,7 +15,7 @@ echo "Starting the data pipeline (mode=$MODE)..."
 datadir="datasets_${MODE}"
 
 # 1. Generate the dataset
-# python generate_dataset.py --repetitions 3 --mode $MODE
+# python generate_dataset.py --repetitions 20 --mode $MODE
 
 # 2. Clean the dataset
 if [[ -d "$datadir" ]]; then
@@ -31,7 +31,7 @@ fi
 
 # 3. Train models
 echo "Training models..."
-python stage_one_model.py --mode $MODE
+# python stage_one_model.py --mode $MODE
 python stage_two_model.py --mode $MODE
 
 # 4. Start the model server

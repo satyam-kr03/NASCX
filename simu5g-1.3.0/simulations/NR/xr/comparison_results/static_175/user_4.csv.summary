@@ -1,2 +1,0 @@
-user_id,avg_cqi,total_frames,received_frames,on_time_frames,late_frames,lost_frames,delivery_ratio,on_time_ratio,loss_ratio,mean_error,avg_delay_ms,deadline_ms,delay_reliability,reliability_threshold,user_satisfied
-4,13.1086,2000,979,598,381,1021,0.4895,0.299,0.5105,7.4091,8.74739,5,0.299,0.99,0

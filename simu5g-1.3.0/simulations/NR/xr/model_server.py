@@ -6,9 +6,10 @@ that returns optimal compression levels for each user given their
 current video characteristics and channel quality.
 
 Usage:
-    python model_server.py                    # default: port 8000
+    python model_server.py                    # default: port 8000, mode=pca
     python model_server.py --port 8080        # custom port
     python model_server.py --device cuda      # force GPU
+    python model_server.py --mode ae           # load AE models/datasets
 """
 
 import argparse
@@ -27,7 +28,8 @@ from pydantic import BaseModel, Field
 
 # ── Paths ─────────────────────────────────────────────────────
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIR  = os.path.join(SCRIPT_DIR, "models_stage2")
+# MODEL_DIR will be computed at startup based on mode (pca/ae)
+MODEL_DIR = None
 
 # ── Logging ───────────────────────────────────────────────────
 logging.basicConfig(
@@ -81,7 +83,12 @@ class HealthResponse(BaseModel):
 # ── Startup / shutdown ────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global models, scaler, config, DEVICE
+    global models, scaler, config, DEVICE, MODEL_DIR
+
+    # determine mode and resulting model directory
+    mode = os.environ.get("MODEL_MODE", "pca")
+    MODEL_DIR = os.path.join(SCRIPT_DIR, f"stage_two_models_{mode}")
+    log.info(f"Operating in mode: {mode}, model dir: {MODEL_DIR}")
 
     # Parse device from env or default
     device_str = os.environ.get("MODEL_DEVICE", "cpu")
@@ -196,8 +203,11 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8000, help="Port")
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"],
                         help="Inference device")
+    parser.add_argument("--mode", choices=["pca", "ae"], default="pca",
+                        help="Which model set to load (pca or ae)")
     args = parser.parse_args()
 
     os.environ["MODEL_DEVICE"] = args.device
+    os.environ["MODEL_MODE"] = args.mode
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

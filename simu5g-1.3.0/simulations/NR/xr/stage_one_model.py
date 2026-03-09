@@ -18,13 +18,23 @@ from torch.utils.data import Dataset, DataLoader, random_split
 from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 import os, json, copy, pickle
+import argparse
 
 # ── Configuration ──────────────────────────────────────────────
-DATASET_PATH = "datasets/random_cl_dataset_clean.csv"
-MODEL_DIR    = "models"
-os.makedirs(MODEL_DIR, exist_ok=True)
+# allow switching between PCA/AE modes
+parser = argparse.ArgumentParser(description="Train stage-one compression models")
+parser.add_argument("--mode", choices=["pca", "ae"], default="pca",
+                    help="Use PCA or AE dataset/model directories")
+args = parser.parse_args()
+MODE = args.mode
 
-COMP_LEVELS     = list(range(25, 401, 25))   # 16 levels: 25, 50, …, 400
+DATASET_PATH = f"datasets_{MODE}/random_cl_dataset_clean.csv"
+MODEL_DIR    = f"stage_one_models_{MODE}"
+os.makedirs(MODEL_DIR, exist_ok=True)
+if MODE == "pca":
+    COMP_LEVELS = list(range(5, 201, 5))   # 16 levels: 25, 50, …, 400
+else:   
+    COMP_LEVELS     = list(range(4, 373, 16))   # 24 levels: 4, 20, 36, …, 372
 NUM_COMP_LEVELS = len(COMP_LEVELS)
 CQI_MIN         = 3                          # min CQI in dataset
 CQI_MAX         = 15                         # max CQI in dataset

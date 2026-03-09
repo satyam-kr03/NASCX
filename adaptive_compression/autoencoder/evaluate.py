@@ -1,83 +1,137 @@
 # autoencoder/evaluate.py
+#
+# Streaming evaluation of autoencoder compression at various latent
+# dimensions.  Processes one test frame at a time so that total memory
+# stays bounded (plus the model weights on device).
 
 import logging
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Set
 
 import numpy as np
-import torch
-import torch.nn.functional as F
-from tqdm import tqdm
 
-from . import DEFAULT_KEEP_RATIOS, DEFAULT_IMG_SIZE
-from .utils import save_results, plot_results
+from . import DEFAULT_LATENT_DIMS, DEFAULT_IMG_SIZE
+from .models import AutoencoderCompressor
 
 
-def evaluate_compression(model: torch.nn.Module, test_frames: np.ndarray, device: torch.device,
-                        keep_ratios: List[float] = DEFAULT_KEEP_RATIOS, img_size: int = DEFAULT_IMG_SIZE) -> List[Dict[str, Any]]:
+def evaluate_compression(
+    compressor: AutoencoderCompressor,
+    video_path: Path,
+    test_indices: Set[int],
+    encoded_sizes: List[Dict],
+    latent_dims: List[int] = DEFAULT_LATENT_DIMS,
+    img_size: int = DEFAULT_IMG_SIZE,
+    total_frames: int = 0,
+) -> List[Dict[str, Any]]:
     """
-    Evaluate compression at different keep ratios.
+    Evaluate autoencoder compression at different latent dimensions by
+    streaming test frames from disk.
 
-    Args:
-        model: Trained model
-        test_frames: Test frames
-        device: Device to evaluate on
-        keep_ratios: List of keep ratios to evaluate
-        img_size: Image size for processing
+    For every test frame *and* every requested latent dimension, one result
+    row is emitted.  An additional row per frame with ``latent_dim=0``
+    records the uncompressed baseline (raw pixel size).
 
-    Returns:
-        List of evaluation results
+    Memory note
+    -----------
+    Only **one frame** is in memory at a time (plus the model weights on
+    device).  The encoded-size list is tiny.
+
+    Parameters
+    ----------
+    compressor : AutoencoderCompressor
+        Manager holding all trained models.
+    video_path : Path
+        Path to the source video (decoded on the fly).
+    test_indices : set[int]
+        Which frame indices belong to the test set.
+    encoded_sizes : list[dict]
+        Per-frame ``{"pkt_size": int, "pict_type": str}`` from ffprobe,
+        aligned by decode order (index 0 = first frame).
+    latent_dims : list[int]
+        Latent dimensions to evaluate.
+    img_size : int
+        Working resolution (square).
+    total_frames : int
+        Total number of frames in the video.  Used to amortise the
+        one-time model weight cost across all frames.
+
+    Returns
+    -------
+    list[dict]
+        One dict per (frame, latent_dim) combination.
     """
-    all_results = []
-    logging.info("Evaluating compression at different rates...")
+    from .data import stream_test_frames
+
+    all_results: List[Dict[str, Any]] = []
+
+    n_test = len(test_indices)
+    # Use total video frames for amortisation (model is shared across all)
+    n_amort = total_frames if total_frames > 0 else n_test
+    H = W = img_size
+    C = 3
+    raw_size_bytes = H * W * C  # uint8: 1 byte / channel
+
+    logging.info("Evaluating autoencoder compression at different latent dimensions...")
+    logging.info(f"  Test frames  : {n_test}")
+    logging.info(f"  Latent dims  : {latent_dims}")
+    logging.info(f"  Working res  : {W}x{H}")
     logging.info("=" * 60)
 
-    # Add original frame sizes with MSE = 0
-    original_size_bytes = img_size * img_size * 3 * 4
-    for frame_idx in range(len(test_frames)):
+    done = 0
+    for frame_idx, frame_uint8 in stream_test_frames(video_path, test_indices, img_size):
+        # Normalise to [0, 1] – single frame, tiny memory
+        frame_f32 = frame_uint8.astype(np.float32) / 255.0
+
+        # Encoded bitstream size for this frame (from ffprobe)
+        if frame_idx < len(encoded_sizes):
+            enc_info = encoded_sizes[frame_idx]
+            enc_size = enc_info["pkt_size"]
+            pict_type = enc_info["pict_type"]
+        else:
+            enc_size = 0
+            pict_type = "?"
+
+        # --- Uncompressed baseline row (latent_dim == 0) ---------------
         all_results.append({
-            'frame': frame_idx + 1,
-            'keep_ratio': 1.0,
-            'mse': 0.0,
-            'size_bytes': original_size_bytes
+            "frame": frame_idx,
+            "latent_dim": 0,
+            "mse": 0.0,
+            "ae_size_bytes": raw_size_bytes,
+            "encoded_size_bytes": enc_size,
+            "raw_size_bytes": raw_size_bytes,
+            "pict_type": pict_type,
         })
 
-    model.eval()
-    for keep_ratio in keep_ratios:
-        compression_pct = int((1 - keep_ratio) * 100)
-        logging.info(f"Keep ratio: {keep_ratio:.2f} ({compression_pct}% compression)")
-
-        for frame_idx in tqdm(range(len(test_frames)), desc="Processing frames"):
-            frame = test_frames[frame_idx]
-            frame_tensor = torch.from_numpy(frame).float() / 255.0
-            frame_tensor = frame_tensor.permute(2, 0, 1).unsqueeze(0)
-            frame_tensor = F.interpolate(frame_tensor, size=(img_size, img_size),
-                                        mode='bilinear', align_corners=False)
-            frame_tensor = frame_tensor.to(device)
-
-            # Compress and reconstruct
-            reconstructed, _, keep_count = model.compress_and_reconstruct(
-                frame_tensor, keep_ratio=keep_ratio
+        # --- Autoencoder-compressed rows --------------------------------
+        for dim in latent_dims:
+            reconstructed = compressor.compress_and_reconstruct(
+                frame_f32, latent_dim=dim,
             )
 
-            # Calculate size including spatial structure overhead
-            # The autoencoder latent is 7x7 which maps to the 224x224 image
-            # Each stored coefficient carries spatial information that must be preserved
-            # Scale by (img_size / latent_spatial_area) to match PCA's spatial accounting
-            latent_spatial_area = 7 * 7  # 49 latent spatial positions
-            spatial_scale = img_size / latent_spatial_area
-            size_bytes = int(keep_count * 4 * spatial_scale)  # 4 bytes per float32
+            # MSE in pixel-value domain ([0, 255])
+            mse = float(np.mean((reconstructed - frame_f32) ** 2)) * (255.0 ** 2)
 
-            # Calculate MSE. We scale by 255^2 to match pixel value range
-            mse = F.mse_loss(reconstructed, frame_tensor).item()*255*255
+            # Size accounting (float32 = 4 bytes):
+            #   per-frame : latent vector = dim × 4
+            #   one-time  : model params × 4  (amortised over all frames)
+            latent_bytes = dim * 4
+            n_params = compressor.get_num_params(dim)
+            model_bytes = n_params * 4
+            ae_size_bytes = int(latent_bytes + model_bytes / n_amort)
 
             all_results.append({
-                'frame': frame_idx + 1,
-                'keep_ratio': keep_ratio,
-                'mse': mse,
-                'size_bytes': size_bytes
+                "frame": frame_idx,
+                "latent_dim": dim,
+                "mse": mse,
+                "ae_size_bytes": ae_size_bytes,
+                "encoded_size_bytes": enc_size,
+                "raw_size_bytes": raw_size_bytes,
+                "pict_type": pict_type,
             })
 
+        done += 1
+        if done % 500 == 0 or done == n_test:
+            logging.info(f"  Processed {done}/{n_test} test frames")
 
     logging.info("=" * 60)
     logging.info("Evaluation complete!")

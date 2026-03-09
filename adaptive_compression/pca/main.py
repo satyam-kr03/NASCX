@@ -35,7 +35,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--output-csv", type=Path,
-        default=Path("pca_compression_results.csv"),
+        default=Path("pca_sweep_summary.csv"),
         help="Output CSV file path",
     )
     parser.add_argument(

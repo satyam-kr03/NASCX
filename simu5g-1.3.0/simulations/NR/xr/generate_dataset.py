@@ -7,7 +7,7 @@ per-frame compression levels. Each user is assigned a video stream (PCA file),
 and the simulation randomly selects compression levels per frame.
 
 Usage:
-    python generate_dataset.py [--dry-run] [--repetitions N] [--sim-time S]
+    python generate_dataset.py [--dry-run] [--repetitions N] [--sim-time S] [--mode pca|ae]
 
 Output:
     datasets/random_cl_dataset.csv
@@ -33,13 +33,17 @@ import numpy as np
 # ─── Configuration ───────────────────────────────────────────────────────────
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-TRAFFIC_DIR = SCRIPT_DIR / "traffic_files"
+# These will be set after parsing CLI arguments in main()
+TRAFFIC_DIR = None          # will point to traffic_files_pca or traffic_files_ae
 RESULTS_DIR = SCRIPT_DIR / "results"
-DATASET_DIR = SCRIPT_DIR / "datasets"
-TRIMMED_DIR = TRAFFIC_DIR / "trimmed"
+DATASET_DIR = None          # will point to datasets_pca or datasets_ae
+TRIMMED_DIR = None
 
-# PCA sweep summary files (one per video)
-PCA_FILES = sorted(TRAFFIC_DIR.glob("pca_sweep_summary_*.csv"))
+# Filename prefix used for lookup (pca or ae)
+FILE_PREFIX = None
+
+# Sweep summary files (one per video) -- computed later
+PCA_FILES = []
 
 MAX_FRAMES = 1000      # Only use first 2000 frames per video
 FPS = 60               # Frames per second (default)
@@ -61,7 +65,7 @@ def compute_complexity_stats():
     """
     stats = {}
     for pca_path in PCA_FILES:
-        video_name = pca_path.stem.replace("pca_sweep_summary_", "")
+        video_name = pca_path.stem.replace(FILE_PREFIX, "")
         df = pd.read_csv(pca_path)
         
         # Get one row per frame (frame_complexity is same across all comp levels)
@@ -98,7 +102,7 @@ def trim_pca_files():
     trimmed_paths = {}
     
     for pca_path in PCA_FILES:
-        video_name = pca_path.stem.replace("pca_sweep_summary_", "")
+        video_name = pca_path.stem.replace(FILE_PREFIX, "")
         df = pd.read_csv(pca_path)
         
         # Get sorted unique frame numbers
@@ -298,12 +302,22 @@ def main():
                         help=f"Simulation time limit in seconds (default: {SIM_TIME_LIMIT})")
     parser.add_argument("--seed", type=int, default=42,
                         help="Base random seed for video assignments")
+    parser.add_argument("--mode", choices=["pca", "ae"], default="pca",
+                        help="Which traffic directory to use (pca or ae)")
     args = parser.parse_args()
+    
+    # determine directories based on mode
+    global TRAFFIC_DIR, TRIMMED_DIR, PCA_FILES, FILE_PREFIX, DATASET_DIR
+    TRAFFIC_DIR = SCRIPT_DIR / ("traffic_files_pca" if args.mode == "pca" else "traffic_files_ae")
+    TRIMMED_DIR = TRAFFIC_DIR / "trimmed"
+    FILE_PREFIX = "pca_sweep_summary_" if args.mode == "pca" else "ae_sweep_summary_"
+    PCA_FILES = sorted(TRAFFIC_DIR.glob(FILE_PREFIX + "*.csv"))
+    DATASET_DIR = SCRIPT_DIR / ("datasets_pca" if args.mode == "pca" else "datasets_ae")
     
     sim_time = args.sim_time
     
     print(f"=" * 60)
-    print(f"XR Dataset Generation")
+    print(f"XR Dataset Generation (mode={args.mode})")
     print(f"  Videos: {len(PCA_FILES)}")
     print(f"  Max frames: {MAX_FRAMES}")
     print(f"  User sweep: {NUM_USERS_SWEEP}")

@@ -1,0 +1,26 @@
+{
+  "elevator": {
+    "path": "/home/teaching/Projects/NASCX/simu5g-1.3.0/simulations/NR/xr/traffic_files_pca/pca_sweep_summary_elevator.csv",
+    "mean_traffic_size": 22761.327,
+    "std_traffic_size": 30524.290763827845,
+    "num_frames": 1000
+  },
+  "minecraft": {
+    "path": "/home/teaching/Projects/NASCX/simu5g-1.3.0/simulations/NR/xr/traffic_files_pca/pca_sweep_summary_minecraft.csv",
+    "mean_traffic_size": 81381.41,
+    "std_traffic_size": 125549.05839625435,
+    "num_frames": 1000
+  },
+  "pacman": {
+    "path": "/home/teaching/Projects/NASCX/simu5g-1.3.0/simulations/NR/xr/traffic_files_pca/pca_sweep_summary_pacman.csv",
+    "mean_traffic_size": 19635.78,
+    "std_traffic_size": 23381.775412167164,
+    "num_frames": 1000
+  },
+  "slide": {
+    "path": "/home/teaching/Projects/NASCX/simu5g-1.3.0/simulations/NR/xr/traffic_files_pca/pca_sweep_summary_slide.csv",
+    "mean_traffic_size": 49658.6,
+    "std_traffic_size": 120407.70430464121,
+    "num_frames": 1000
+  }
+}

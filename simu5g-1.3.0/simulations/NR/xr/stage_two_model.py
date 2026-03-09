@@ -28,12 +28,24 @@ import matplotlib.pyplot as plt
 import os, json, copy, pickle, time
 
 # ── Configuration ──────────────────────────────────────────────
-DATASET_PATH    = "datasets/random_cl_dataset_clean.csv"
-STAGE1_DIR      = "models"             # Stage 1 models (from model.ipynb)
-STAGE2_DIR      = "models_stage2"
+import argparse
+parser = argparse.ArgumentParser(description="Train stage-two compression models")
+parser.add_argument("--mode", choices=["pca", "ae"], default="pca",
+                    help="Use PCA or AE dataset/model directories")
+args = parser.parse_args()
+MODE = args.mode
+
+DATASET_PATH    = f"datasets_{MODE}/random_cl_dataset_clean.csv"
+# Stage 1 models directory should match stage_one_model output
+STAGE1_DIR      = f"stage_one_models_{MODE}"
+STAGE2_DIR      = f"stage_two_models_{MODE}"
 os.makedirs(STAGE2_DIR, exist_ok=True)
 
-COMP_LEVELS     = list(range(25, 401, 25))   # 16 levels
+if MODE == "pca":
+    COMP_LEVELS = list(range(5, 201, 5))   # 16 levels: 25, 50, ..., 400
+else:
+    COMP_LEVELS = list(range(4, 373, 16))   # 24 levels: 4, 20, 36, ..., 372
+
 COMP_TO_IDX     = {c: i for i, c in enumerate(COMP_LEVELS)}
 NUM_COMP_LEVELS = len(COMP_LEVELS)
 CQI_MIN, CQI_MAX = 3, 15
@@ -56,6 +68,7 @@ S2_PATIENCE     = 20
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Device: {DEVICE}")
+print(f"Mode: {MODE}")
 print(f"Stage 1 models: {STAGE1_DIR}/")
 print(f"Stage 2 output: {STAGE2_DIR}/")
 
@@ -486,18 +499,19 @@ print(f"{'Config':>8s}  {'Top-1':>6s}  {'Top-3':>6s}  {'Oracle err':>10s}  "
       f"{'S2 err':>10s}  {'Random err':>10s}  {'S2/Oracle':>9s}")
 print("-" * 75)
 
-for n_u in range(2, 11):
-    _, _, test_ds = s2_datasets[n_u]
-    sc, cq, ol, ae, oc, actual = label_data[n_u]
-    res = evaluate_selector(
-        s2_models[n_u], s1_models[n_u], test_ds,
-        sc, cq, ae, global_scaler, static_scaler
-    )
-    eval_results[n_u] = res
-    ratio = res['s2_err_mean'] / res['oracle_err_mean']
-    print(f"{n_u:>8d}  {res['top1_acc']:>6.1%}  {res['top3_acc']:>6.1%}  "
-          f"{res['oracle_err_mean']:>10.2f}  {res['s2_err_mean']:>10.2f}  "
-          f"{res['random_err_mean']:>10.2f}  {ratio:>9.2f}×")
+# time consuming part so commenting out for now — will run after demo section
+# for n_u in range(2, 11):
+#     _, _, test_ds = s2_datasets[n_u]
+#     sc, cq, ol, ae, oc, actual = label_data[n_u]
+#     res = evaluate_selector(
+#         s2_models[n_u], s1_models[n_u], test_ds,
+#         sc, cq, ae, global_scaler, static_scaler
+#     )
+#     eval_results[n_u] = res
+#     ratio = res['s2_err_mean'] / res['oracle_err_mean']
+#     print(f"{n_u:>8d}  {res['top1_acc']:>6.1%}  {res['top3_acc']:>6.1%}  "
+#           f"{res['oracle_err_mean']:>10.2f}  {res['s2_err_mean']:>10.2f}  "
+#           f"{res['random_err_mean']:>10.2f}  {ratio:>9.2f}×")
 
 # %%
 # ── Training curves ───────────────────────────────────────────

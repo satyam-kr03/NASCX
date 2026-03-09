@@ -50,8 +50,8 @@ def save_results(results: List[Dict[str, Any]], output_file: Path) -> None:
         .agg(
             mse_mean=("mse", "mean"),
             mse_std=("mse", "std"),
-            pca_size=("pca_size_bytes", "first"),
-            enc_size_mean=("encoded_size_bytes", "mean"),
+            pca_size=("size_bytes", "first"),
+            enc_size_mean=("frame_complexity", "mean"),
             expl_var=("explained_variance", "first"),
         )
         .round(4)
@@ -88,7 +88,7 @@ def plot_results(results: List[Dict[str, Any]], output_file: Path) -> None:
 
     # ---- Panel 2: Rate-distortion ---------------------------------
     avg_mse = df.groupby("components")["mse"].mean()
-    avg_size = df.groupby("components")["pca_size_bytes"].first()
+    avg_size = df.groupby("components")["size_bytes"].first()
 
     sort_idx = avg_size.argsort()
     avg_size_sorted = avg_size.iloc[sort_idx]

@@ -2,6 +2,8 @@
 """
 Visualisation script for comparison_results/comparison.csv.
 
+Supports PCA and AE modes; use `--mode` to choose traffic set and results directory.
+
 Produces six figures saved to plots/:
   1. effective_error_vs_cl.png   – mean effective error vs compression level
                                    (static curve + model horizontal band)
@@ -56,8 +58,9 @@ plt.rcParams.update({
 })
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-DEFAULT_CSV  = SCRIPT_DIR / "comparison_results" / "comparison.csv"
-DEFAULT_PLOTS = SCRIPT_DIR / "plots"
+# defaults will be computed inside `main()` after mode parsing
+DEFAULT_CSV  = None
+DEFAULT_PLOTS = None
 
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
@@ -367,14 +370,18 @@ def main():
     parser = argparse.ArgumentParser(
         description="Plot comparison results from run_comparison.py"
     )
-    parser.add_argument("--csv", type=Path, default=DEFAULT_CSV,
-                        help=f"Path to comparison CSV (default: {DEFAULT_CSV})")
-    parser.add_argument("--out-dir", type=Path, default=DEFAULT_PLOTS,
-                        help=f"Output directory for plots (default: {DEFAULT_PLOTS})")
+    parser.add_argument("--mode", choices=["pca", "ae"], default="pca",
+                        help="Which results set to plot (pca or ae)")
+    parser.add_argument("--csv", type=Path,
+                        help="Path to comparison CSV (overrides mode default)")
+    parser.add_argument("--out-dir", type=Path,
+                        help="Output directory for plots (overrides mode default)")
     args = parser.parse_args()
 
-    csv_path: Path = args.csv
-    out_dir: Path  = args.out_dir
+    mode = args.mode
+    # set defaults based on mode if paths not provided
+    csv_path: Path = args.csv if args.csv is not None else SCRIPT_DIR / f"comparison_results_{mode}" / "comparison.csv"
+    out_dir: Path  = args.out_dir if args.out_dir is not None else SCRIPT_DIR / f"plots_{mode}"
 
     if not csv_path.exists():
         print(f"[ERROR] CSV not found: {csv_path}")

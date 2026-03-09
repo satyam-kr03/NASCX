@@ -12,8 +12,11 @@ Simplified pipeline (inline model queries during simulation):
 
 Usage:
     python run_comparison_parallel.py [--num-users N] [--sim-time S] [--seed SEED]
-                                      [--server-url URL] [--dry-run]
-                                      [--max-workers W]
+                                      [--server-url URL] [--mode pca|ae]
+                                      [--dry-run] [--max-workers W]
+
+The --mode flag selects which traffic_files_(pca|ae) directory to use and
+writes results to comparison_results_(pca|ae).
 """
 
 import argparse
@@ -34,20 +37,29 @@ import requests
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-SCRIPT_DIR = Path(__file__).parent.resolve()
-TRAFFIC_DIR = SCRIPT_DIR / "traffic_files"
-TRIMMED_DIR = TRAFFIC_DIR / "trimmed"
-RESULTS_DIR = SCRIPT_DIR / "comparison_results"
-DATASET_DIR = SCRIPT_DIR / "datasets"
+import argparse
 
-COMP_LEVELS = list(range(25, 401, 25))       # 25, 50, 75, ... 400
+SCRIPT_DIR = Path(__file__).parent.resolve()
+# mode will be parsed later; defaults to 'pca'
+MODE = 'pca'
+TRAFFIC_DIR = None  # will be set after CLI parsing
+TRIMMED_DIR = None
+RESULTS_DIR = None
+
+if MODE == "pca":
+    COMP_LEVELS = list(range(5, 201, 5))       # 25, 50, 75, ... 400
+else:
+    COMP_LEVELS = list(range(4, 373, 16))       # 4, 20, 36, ... 372 (AE levels)
 MAX_FRAMES = 2000
 FPS = 60
 DEADLINE_MS = 5.0
 FPS_OPTIONS = [45, 60, 72, 90, 120]            # Per-user frame rate choices
 
-# PCA files (trimmed to 2000 frames)
-PCA_FILES = sorted(TRIMMED_DIR.glob("pca_sweep_summary_*.csv"))
+# file prefix for sweep summaries (pca or ae)
+FILE_PREFIX = None
+
+# PCA files (trimmed to 2000 frames) -- computed later
+PCA_FILES = []
 
 MODEL_SERVER_URL = "http://localhost:8000"
 
@@ -58,7 +70,7 @@ DEFAULT_MAX_WORKERS = 31
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def video_name_from_path(p: Path) -> str:
-    return p.stem.replace("pca_sweep_summary_", "")
+    return p.stem.replace(FILE_PREFIX, "")
 
 
 def assign_videos(num_users: int, seed: int = 42) -> list[str]:
@@ -76,7 +88,7 @@ def assign_fps(num_users: int, seed: int = 42) -> list[int]:
 
 
 def pca_path_for_video(video: str) -> Path:
-    return TRIMMED_DIR / f"pca_sweep_summary_{video}.csv"
+    return TRIMMED_DIR / f"{FILE_PREFIX}{video}.csv"
 
 
 def build_sim_cmd(
@@ -349,6 +361,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Compare model-adaptive vs static XR compression (parallel)"
     )
+    parser.add_argument("--mode", choices=["pca", "ae"], default="pca",
+                        help="Choose traffic file mode (pca or ae)")
     parser.add_argument("--num-users", type=int, default=5,
                         help="Number of UEs (2-10, default: 5)")
     parser.add_argument("--sim-time", type=int, default=35,
@@ -370,6 +384,13 @@ def main():
     seed = args.seed
     server_url = args.server_url
     max_workers = args.max_workers
+    global MODE, TRAFFIC_DIR, TRIMMED_DIR, RESULTS_DIR, FILE_PREFIX, PCA_FILES
+    MODE = args.mode
+    TRAFFIC_DIR = SCRIPT_DIR / ("traffic_files_pca" if MODE == "pca" else "traffic_files_ae")
+    TRIMMED_DIR = TRAFFIC_DIR / "trimmed"
+    FILE_PREFIX = "pca_sweep_summary_" if MODE == "pca" else "ae_sweep_summary_"
+    PCA_FILES = sorted(TRIMMED_DIR.glob(FILE_PREFIX + "*.csv"))
+    RESULTS_DIR = SCRIPT_DIR / f"comparison_results_{MODE}"
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -377,7 +398,7 @@ def main():
     total_sims = 1 + len(COMP_LEVELS)
 
     print("=" * 65)
-    print("  Model vs Static Compression Comparison  [PARALLEL]")
+    print(f"  Model vs Static Compression Comparison  [PARALLEL] (mode={MODE})")
     print("  (Inline model queries — no probe simulation)")
     print("=" * 65)
     print(f"  Users:           {num_users}")

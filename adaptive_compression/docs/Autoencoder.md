@@ -1,184 +1,131 @@
-# Variable Rate Autoencoder for Video Compression
+# Autoencoder-based Dimensionality Reduction for 360° XR Frames
 
 ## Overview
+The autoencoder compression module provides a neural, learning-based pipeline for controllable dimensionality reduction of high-dimensional 360° XR (Extended Reality) video frames. By training a family of symmetric convolutional autoencoders — one per target bottleneck size — the module learns nonlinear encoder–decoder mappings that compress frames into compact latent vectors and reconstruct them with minimal distortion.
 
-This module implements a **convolutional autoencoder with residual connections** for variable-rate video frame compression. The autoencoder learns to encode video frames into a compact latent representation and can reconstruct them at different compression levels by selectively keeping the most important latent coefficients.
+The compression level is governed by the **latent dimension** $d$: smaller values yield higher compression at the cost of increased reconstruction error, while larger values preserve more detail. The primary objective is to evaluate the rate-distortion trade-off: comparing the transmitted data size (dictated by the latent dimension and amortised model weights) versus the resulting mean squared error (MSE) relative to the source frames. This establishes a learned-compression baseline for dynamic adaptation across evolving network conditions, complementing the linear PCA baseline.
 
 ## Architecture
 
-### Network Design
+The compression module is systematically organised into five distinct components under the `autoencoder/` package:
 
-The autoencoder consists of three main components:
+1. **`main.py`**: The CLI orchestration script bridging data extraction, per-dimension model training, streaming evaluation, and storing final outputs.
+2. **`data.py`**: Re-exports the shared video I/O functions from `pca.data` (metadata extraction, per-frame encoded bitstream sizing via `ffprobe`, streaming frame decoding via `PyAV` and `OpenCV`) and adds a PyTorch `Dataset` / `DataLoader` wrapper for mini-batch training.
+3. **`models.py`**: Supplies the core `ConvAutoencoder` network (a symmetric Conv2d encoder–decoder) and the `AutoencoderCompressor` manager that instantiates, trains, and queries one model per latent dimension.
+4. **`evaluate.py`**: The streaming evaluation engine iteratively compressing frames through each trained model, computing distortion metrics (MSE), and allocating amortised overhead to size estimations simultaneously across various latent dimension scenarios.
+5. **`utils.py`**: Implements logging standardisation, aggregates frame-level metrics into CSV datasets, and renders dual-panel visualisations via `matplotlib`.
 
-#### 1. Residual Block
-- Two convolutional layers with batch normalization
-- Skip connection for gradient flow
-- ReLU activation
+## Core Mechanisms
 
-```
-Input → Conv3x3 → BN → ReLU → Conv3x3 → BN → (+) → ReLU → Output
-  ↓                                            ↑
-  └────────────────────────────────────────────┘
-```
+### Data Extraction and Pre-processing
+The pipeline shares its data layer with the PCA module to avoid code duplication. All video I/O functions (`get_video_info`, `get_encoded_frame_sizes`, `sample_training_frames`, `stream_test_frames`) are re-exported from `pca.data`. The autoencoder-specific addition is:
 
-#### 2. Encoder
-Progressive downsampling from 224×224 to 7×7:
+- **`FrameDataset`**: A PyTorch `Dataset` wrapping an `(N, H, W, 3)` uint8 numpy array. Each `__getitem__` call normalises to float32 $\in [0, 1]$ and transposes to channel-first format `(3, H, W)` as required by PyTorch convolutional layers.
+- **`get_dataloader`**: Constructs a `DataLoader` with configurable batch size, shuffling, and multi-worker prefetching for efficient GPU utilisation.
 
-| Layer | Input Size | Output Size | Channels |
-|-------|-----------|-------------|----------|
-| Conv1 + ResBlock | 224×224 | 112×112 | 3 → 64 |
-| Conv2 + ResBlock | 112×112 | 56×56 | 64 → 128 |
-| Conv3 + ResBlock | 56×56 | 28×28 | 128 → 256 |
-| Conv4 | 28×28 | 14×14 | 256 → 512 |
-| Conv5 | 14×14 | 7×7 | 512 → latent_channels |
+Frame pre-processing follows the same conventions as the PCA pipeline:
+- **Bilinear Resizing** to `(img_size, img_size)` (default $224 \times 224$).
+- **Normalisation** to float32 $\in [0, 1]$.
+- **Train/Test Split** via random permutation with configurable `train_ratio` (default $0.33$).
 
-#### 3. Decoder
-Progressive upsampling from 7×7 back to 224×224:
+### Network Architecture
+The `ConvAutoencoder` is a symmetric convolutional autoencoder with a flat bottleneck:
 
-| Layer | Input Size | Output Size | Channels |
-|-------|-----------|-------------|----------|
-| ConvTranspose1 | 7×7 | 14×14 | latent_channels → 512 |
-| ConvTranspose2 + ResBlock | 14×14 | 28×28 | 512 → 256 |
-| ConvTranspose3 + ResBlock | 28×28 | 56×56 | 256 → 128 |
-| ConvTranspose4 + ResBlock | 56×56 | 112×112 | 128 → 64 |
-| ConvTranspose5 | 112×112 | 224×224 | 64 → 3 |
+**Encoder:**
 
-### Variable Rate Compression
+$$x \in \mathbb{R}^{3 \times 224 \times 224} \xrightarrow{\text{4 × (Conv2d → BN → ReLU)}} h \in \mathbb{R}^{256 \times 14 \times 14} \xrightarrow{\text{Flatten → Linear}} z \in \mathbb{R}^{d}$$
 
-The key innovation is the **variable rate compression mechanism**:
+Each convolutional block uses kernel size 4, stride 2, padding 1, halving the spatial dimensions at each stage through the channel progression $[3, 32, 64, 128, 256]$. The resulting $256 \times 14 \times 14 = 50{,}176$-dimensional feature vector is linearly projected to the latent vector $z$ of dimension $d$.
 
-1. Encode the frame to get the latent representation
-2. Flatten the latent tensor into a 1D vector
-3. Sort coefficients by absolute magnitude
-4. Keep only the top-k coefficients based on `keep_ratio`
-5. Zero out the remaining coefficients
-6. Decode the modified latent representation
+**Decoder:**
 
-This allows adjusting the compression rate **without retraining** the model.
+$$z \in \mathbb{R}^{d} \xrightarrow{\text{Linear → Reshape}} h \in \mathbb{R}^{256 \times 14 \times 14} \xrightarrow{\text{4 × (ConvTranspose2d → BN → ReLU)}} \hat{x} \in \mathbb{R}^{3 \times 224 \times 224}$$
 
-## Module Structure
+The decoder mirrors the encoder with transposed convolutions. The final layer uses a **Sigmoid** activation to constrain pixel outputs to $[0, 1]$.
 
-```
-autoencoder/
-├── __init__.py      # Constants and configuration
-├── models.py        # Neural network architectures
-├── data.py          # Video loading and preprocessing
-├── train.py         # Training loop
-├── evaluate.py      # Compression evaluation
-├── main.py          # CLI entry point
-└── utils.py         # Logging, saving, plotting
-```
+### Per-Dimension Model Training with Warm-Starting
+Unlike the PCA pipeline — where a single fit supports arbitrary component truncation — autoencoders have a fixed bottleneck width that is integral to the learned mapping. The module therefore trains **one dedicated model per target latent dimension**, proceeding in **ascending order** of dimension with **warm-starting** to promote monotonic rate-distortion behaviour:
 
-## Configuration
+- The `AutoencoderCompressor` instantiates $|\mathcal{D}|$ independent `ConvAutoencoder` instances, where $\mathcal{D}$ is the set of evaluation dimensions (default: $\{32, 64, 96, \ldots, 512\}$, trained smallest-first).
+- Each model is trained using the **Adam** optimiser (default $\text{lr} = 10^{-3}$) with pixel-wise **MSE loss** over $E$ epochs (default $E = 50$).
+- **Warm-starting**: after training the model for dimension $d_i$, its convolutional backbone weights (`encoder_conv`, `decoder_conv`) are copied into the next model ($d_{i+1}$) before that model's training begins. Since the convolutional layers are structurally identical across all models — only the FC bottleneck layers (`encoder_fc`, `decoder_fc`) differ in width — this transfers the learned spatial feature extraction while allowing the new, wider bottleneck to be optimised from scratch. The warm-start gives larger models a strictly better initialisation, promoting monotonically decreasing reconstruction error as the latent dimension increases.
+- Following training, all models are set to `eval()` mode and training data is freed via standard GC hooks (`del train_frames`).
 
-Default parameters defined in `__init__.py`:
+### Compression and Reconstruction
+The `compress_and_reconstruct` procedure for a target frame $x$ and latent dimension $d$:
 
-| Parameter | Default Value | Description |
-|-----------|---------------|-------------|
-| `RANDOM_SEED` | 42 | Random seed for reproducibility |
-| `DEFAULT_IMG_SIZE` | 224 | Input image size (square) |
-| `DEFAULT_LATENT_CHANNELS` | 128 | Number of latent channels |
-| `DEFAULT_BATCH_SIZE` | 16 | Training batch size |
-| `DEFAULT_NUM_EPOCHS` | 40 | Number of training epochs |
-| `DEFAULT_LEARNING_RATE` | 0.001 | Initial learning rate |
-| `DEFAULT_TRAIN_RATIO` | 0.15 | Ratio of frames for training |
-| `DEFAULT_KEEP_RATIOS` | 0.05 to 0.80 | 16 compression levels |
+1. **Channel transposition and batching**: $(H, W, 3) \to (1, 3, H, W)$
+2. **Encoding**: $z = f_{\text{enc}}^{(d)}(x) \in \mathbb{R}^{d}$
+3. **Decoding**: $\hat{x} = f_{\text{dec}}^{(d)}(z) \in \mathbb{R}^{3 \times H \times W}$
+4. **Output clamping**: $\hat{x} \leftarrow \text{clip}(\hat{x}, 0, 1)$ preventing out-of-gamut values
+5. **Reshape**: $(1, 3, H, W) \to (H, W, 3)$
+
+The entire forward pass runs under `torch.no_grad()` for memory-efficient inference.
+
+### Streaming Evaluation Engine
+Defined under `evaluate.evaluate_compression()`, the evaluation mirrors the PCA pipeline's structure:
+
+- The pipeline holds merely $\approx 1$ frame in memory at a time (plus the model weights on device).
+- For each test frame, a **baseline row** is emitted with `latent_dim=0`, `mse=0.0`, and `ae_size_bytes=raw_size_bytes`.
+- For each target latent dimension $d \in \mathcal{D}$, the frame is compressed and reconstructed through the corresponding model.
+- **Error metric**: pixel-domain Mean Squared Error scaled to $[0, 255]$ range:
+
+$$\text{MSE} = \frac{255^2}{N_{\text{pixels}}} \sum_{i} (\hat{x}_i - x_i)^2$$
+
+- **Size accounting** (per frame):
+
+$$\text{ae\_size\_bytes} = \underbrace{d \times 4}_{\text{latent vector (float32)}} + \underbrace{\frac{|\theta^{(d)}| \times 4}{\text{total\_frames}}}_{\text{amortised model weights}}$$
+
+where $|\theta^{(d)}|$ is the number of trainable parameters in the model for dimension $d$. This amortises the one-time cost of transmitting or storing the decoder weights across all frames, directly mirroring the PCA pipeline's treatment of basis vectors and global mean.
+
+### Visualisation and Metric Storage
+Through `.csv` exports and `plot_results()`, output graphs coalesce into dual-panel summaries:
+
+1. **Frame-by-frame reconstruction error**: MSE (log-scale) per frame index for each latent dimension, showing per-frame volatility and content-dependent compression difficulty.
+2. **Rate-distortion curve**: Average MSE (log-scale) versus `ae_size_bytes` with annotated latent dimension labels, encapsulating the fundamental compression–quality trade-off.
+
+### CSV Output Format
+Each row records one `(frame, latent_dim)` evaluation point:
+
+| Column | Description |
+|---|---|
+| `frame` | Frame index in the video |
+| `latent_dim` | Bottleneck dimension ($0$ for uncompressed baseline) |
+| `mse` | Pixel-domain MSE ($\times 255^2$) |
+| `ae_size_bytes` | Latent vector + amortised model weight cost |
+| `encoded_size_bytes` | Original codec packet size from `ffprobe` |
+| `raw_size_bytes` | Uncompressed frame size ($H \times W \times C$) |
+| `pict_type` | Original codec picture type (I / P / B) |
 
 ## Usage
 
-### Command Line
-
 ```bash
-# Run with default settings
-python autoencoder.py
-
-# Custom video and parameters
-python autoencoder.py \
-    --video-path /path/to/video.mp4 \
-    --latent-channels 128 \
-    --batch-size 16 \
-    --num-epochs 40 \
-    --learning-rate 0.001 \
-    --train-ratio 0.15 \
-    --output-csv results.csv \
-    --output-plot analysis.png
+# From the adaptive_compression/ directory:
+python ae.py \
+  --video-path ../data/yt360-videos/aliens.mp4 \
+  --max-latent-dim 512 \
+  --epochs 50 \
+  --batch-size 32 \
+  --lr 0.001 \
+  --train-ratio 0.33 \
+  --output-csv ae_compression_results.csv \
+  --output-plot ae_compression_analysis.png \
+  --device cuda \
+  --log-level INFO
 ```
 
-### Programmatic API
+### CLI Arguments
 
-```python
-import torch
-from autoencoder.models import VariableRateAutoencoder
-from autoencoder.data import load_data, FrameDataset
-from autoencoder.train import train_model
-from autoencoder.evaluate import evaluate_compression
-
-# Load data
-frames_train, frames_test = load_data(video_path, train_ratio=0.15)
-
-# Create model
-model = VariableRateAutoencoder(latent_channels=128)
-model.to(device)
-
-# Train
-dataset = FrameDataset(frames_train)
-dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
-train_model(model, dataloader, device, num_epochs=40)
-
-# Evaluate at different compression levels
-results = evaluate_compression(model, frames_test, device)
-```
-
-## Output Format
-
-### CSV Results
-The evaluation produces a CSV file with columns:
-
-| Column | Description |
-|--------|-------------|
-| `frame` | Frame index (1-based) |
-| `keep_ratio` | Ratio of coefficients kept (0.05 to 1.0) |
-| `mse` | Mean Squared Error (pixel scale 0-255) |
-| `size_bytes` | Compressed size in bytes |
-
-**Note**: For each frame, an additional row is included with the original uncompressed frame size where `keep_ratio` = 1.0, `mse` = 0, and `size_bytes` = `img_size × img_size × 3 × 4`.
-
-### Visualization
-A PNG file with two plots:
-1. **MSE by Frame**: Reconstruction error across frames for each keep ratio
-2. **Rate-Distortion Curve**: Average MSE vs. compressed size
-
-## Training Details
-
-- **Loss Function**: Mean Squared Error (MSE)
-- **Optimizer**: Adam with learning rate 0.001
-- **Scheduler**: ReduceLROnPlateau (factor=0.5, patience=3)
-- **Data Split**: 15% training, 85% testing (shuffled)
-
-## Performance Characteristics
-
-| Keep Ratio | Typical MSE | Compressed Size |
-|------------|-------------|-----------------|
-| 0.80 | ~400 | ~20KB |
-| 0.50 | ~470 | ~12KB |
-| 0.20 | ~1800 | ~5KB |
-| 0.05 | ~4100 | ~1.2KB |
-
-*Values are approximate and depend on video content.*
-
-## Dependencies
-
-- PyTorch
-- NumPy
-- Pandas
-- Matplotlib
-- PyAV (for video reading)
-- tqdm (for progress bars)
-
-## File Locations
-
-- **Entry Point**: `adaptive_compression/autoencoder.py`
-- **Module**: `adaptive_compression/autoencoder/`
-- **Default Video**: `data/sintel_trailer-1080p.mp4`
-- **Output**: `autoencoder/varrate_compression_results.csv`
-- **Plot**: `autoencoder/varrate_compression_analysis.png`
+| Argument | Default | Description |
+|---|---|---|
+| `--video-path` | `../data/yt360-videos/minecraft.mp4` | Path to the input video file |
+| `--max-latent-dim` | `512` | Maximum latent dimension; filters `DEFAULT_LATENT_DIMS` |
+| `--train-ratio` | `0.33` | Fraction of frames used for training |
+| `--epochs` | `50` | Training epochs per model |
+| `--batch-size` | `32` | Mini-batch size for training |
+| `--lr` | `0.001` | Adam optimiser learning rate |
+| `--img-size` | `224` | Working resolution (frames resized to square) |
+| `--device` | Auto-detect | `cuda` or `cpu` |
+| `--output-csv` | `ae_compression_results.csv` | Output CSV path |
+| `--output-plot` | `ae_compression_analysis.png` | Output plot path |
+| `--log-level` | `INFO` | Logging verbosity |

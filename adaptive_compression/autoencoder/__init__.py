@@ -4,13 +4,14 @@ __version__ = "1.0.0"
 
 # Constants
 RANDOM_SEED = 42
-DEFAULT_IMG_SIZE = 224
-DEFAULT_LATENT_CHANNELS = 128
-DEFAULT_BATCH_SIZE = 16
-DEFAULT_NUM_EPOCHS = 100  # Increased from 40 for better convergence
-DEFAULT_LEARNING_RATE = 0.001
-DEFAULT_TRAIN_RATIO = 0.5  # Increased from 0.15 for more training data
+DEFAULT_IMG_SIZE = 224  # working resolution (square); matches PCA pipeline
+DEFAULT_TRAIN_RATIO = 0.20
 
-# Keep ratios from 0.0625 (1/16) to 1.0 (full fidelity)
-# This gives 16 evenly spaced evaluation points matching PCA's 16 component levels
-DEFAULT_KEEP_RATIOS = [(i + 1) / 16 for i in range(16)]  # [0.0625, 0.125, ..., 1.0]
+# Default latent dimensions to evaluate: 4, 20, 36, ..., 228
+DEFAULT_LATENT_DIMS = list(range(4, 373, 16))
+
+# Training hyper-parameters
+DEFAULT_EPOCHS = 50
+DEFAULT_BATCH_SIZE = 32
+DEFAULT_LR = 1e-3
+DEFAULT_MAX_LATENT_DIM = 372

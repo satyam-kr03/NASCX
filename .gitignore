@@ -6,3 +6,5 @@ __pycache__/
 semantic_relevance/Salient360/SalViT360
 simu5g-1.3.0/simulations/NR/xr/comparison_results_pca
 simu5g-1.3.0/simulations/NR/xr/comparison_results_ae
+simu5g-1.3.0/simulations/NR/xr/datasets_ae
+simu5g-1.3.0/simulations/NR/xr/datasets_pca

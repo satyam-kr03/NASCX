@@ -41,13 +41,26 @@ STAGE1_DIR      = f"stage_one_models_{MODE}"
 STAGE2_DIR      = f"stage_two_models_{MODE}"
 os.makedirs(STAGE2_DIR, exist_ok=True)
 
+# ── Fine compression levels (used for Stage 1 sweep) ─────────
 if MODE == "pca":
-    COMP_LEVELS = list(range(5, 201, 5))   # 16 levels: 25, 50, ..., 400
+    COMP_LEVELS_FINE = list(range(5, 201, 5))   # 40 fine levels
+    BIN_SIZE = 5                                # CLs per bin
 else:
-    COMP_LEVELS = list(range(4, 373, 16))   # 24 levels: 4, 20, 36, ..., 372
+    COMP_LEVELS_FINE = list(range(4, 373, 16))  # 24 fine levels
+    BIN_SIZE = 4
 
+NUM_FINE_LEVELS = len(COMP_LEVELS_FINE)
+NUM_BINS        = NUM_FINE_LEVELS // BIN_SIZE
+
+# Representative CL for each bin (centre element of each group)
+# e.g. PCA bins: [15, 40, 65, 90, 115, 140, 165, 190]
+COMP_LEVELS = [
+    COMP_LEVELS_FINE[i * BIN_SIZE + BIN_SIZE // 2]
+    for i in range(NUM_BINS)
+]
 COMP_TO_IDX     = {c: i for i, c in enumerate(COMP_LEVELS)}
-NUM_COMP_LEVELS = len(COMP_LEVELS)
+NUM_COMP_LEVELS = NUM_BINS   # Stage 2 outputs this many classes
+
 CQI_MIN, CQI_MAX = 3, 15
 CQI_VOCAB_SIZE  = CQI_MAX - CQI_MIN + 1     # 13
 CQI_EMBED_DIM   = 4
@@ -66,9 +79,19 @@ S2_LR           = 1e-3
 S2_EPOCHS       = 200
 S2_PATIENCE     = 20
 
+# Loss-aware label generation: penalise high CLs to account for
+# unmodeled packet-loss at high compression levels.  The training data
+# only contains *received* frames so Stage 1 never learned about the
+# penalty incurred when large frames miss the deadline or are lost.
+# Calibrated so the label distribution peaks around CL 50-90 (the
+# static-comparison sweet-spot) rather than maxing out at CL 200.
+LOSS_PENALTY_WEIGHT = 300.0     # peak penalty added at max CL
+
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Device: {DEVICE}")
 print(f"Mode: {MODE}")
+print(f"Fine CLs ({NUM_FINE_LEVELS}): {COMP_LEVELS_FINE}")
+print(f"Bins ({NUM_BINS}): {COMP_LEVELS}")
 print(f"Stage 1 models: {STAGE1_DIR}/")
 print(f"Stage 2 output: {STAGE2_DIR}/")
 
@@ -150,49 +173,74 @@ def extract_static_features(df, num_users):
     return static_cont, cqi_idx, orig_comp, actual_err
 
 # %% [markdown]
-# ## 2. Generate Labels via Stage 1 Sweep
-# 
-# For each row in the dataset, we:
-# 1. Take each user's **static features** (meantrafficsize, stdtrafficsize, frameComplexity, frame_rate, CQI) — everything *except* compression level.
-# 2. Sweep all 16 compression levels through the Stage 1 model.
-# 3. For each user, the **optimal compression label** = argmin of predicted effective error across 16 levels.
-# 
-# This produces a fully-labeled classification dataset where the Stage 1 model acts as the oracle.
+# ## 2. Generate Labels via Binned Stage 1 Sweep
+#
+# For each sample and each user:
+# 1. Sweep all fine compression levels through Stage 1.
+# 2. Add a quadratic loss penalty proportional to (CL / max_CL)^2 to each prediction.
+#    This compensates for the unmodeled packet-loss / deadline-miss
+#    at high CLs (Stage 1 was trained only on received frames).
+# 3. Average the penalised error within each of the 8 bins.
+# 4. Select the bin with the lowest average penalised error as the label.
+#
+# Reducing 40 fine CLs down to 8 bins makes the classification
+# problem tractable (the previous 40-class accuracy was ~25%).
 
 # %%
+def _loss_penalty(comp_val):
+    """Quadratic penalty discouraging excessively high CLs."""
+    ratio = comp_val / max(COMP_LEVELS_FINE)
+    return LOSS_PENALTY_WEIGHT * ratio * ratio
+
+
 @torch.no_grad()
 def generate_labels(s1_model, static_cont, cqi_idx, scaler, batch_size=512):
     """
-    Sweep all 16 compression levels through Stage 1 to find per-user optima.
+    Per-user sweep with loss penalty + bin averaging.
 
-    Returns:
-        opt_labels : (n, N) int  — index of optimal compression per user (0-15)
-        all_errors : (n, N, 16) float — predicted errors at all 16 levels
+    Returns
+    -------
+    opt_labels : (n, N) int        — optimal BIN index per user (0 .. NUM_BINS-1)
+    bin_errors : (n, N, NUM_BINS)  — average penalised error per bin
     """
     s1_model.eval()
     n, N, _ = static_cont.shape
-    all_errors = np.zeros((n, N, NUM_COMP_LEVELS), dtype=np.float32)
+    F_levels = NUM_FINE_LEVELS
 
-    for ci, comp_val in enumerate(COMP_LEVELS):
-        # Build full 5-feature input: [static_feats..., comp_val]
+    # Pre-compute per-fine-level penalty
+    penalties = np.array([_loss_penalty(c) for c in COMP_LEVELS_FINE],
+                         dtype=np.float32)  # (F_levels,)
+
+    # Sweep all fine CLs (each user independently)
+    fine_errors = np.zeros((n, N, F_levels), dtype=np.float32)
+
+    for ci, comp_val in enumerate(COMP_LEVELS_FINE):
         comp_col = np.full((n, N, 1), comp_val, dtype=np.float32)
-        x_full   = np.concatenate([static_cont, comp_col], axis=-1)  # (n, N, 5)
+        x_full   = np.concatenate([static_cont, comp_col], axis=-1)  # (n,N,5)
 
-        # Normalise with global scaler
         shape = x_full.shape
-        x_scaled = scaler.transform(x_full.reshape(-1, NUM_S1_CONT)).reshape(shape)
+        x_scaled = scaler.transform(
+            x_full.reshape(-1, NUM_S1_CONT)).reshape(shape)
 
-        # Predict in batches
         for start in range(0, n, batch_size):
             end = min(start + batch_size, n)
-            xc  = torch.tensor(x_scaled[start:end], dtype=torch.float32).to(DEVICE)
-            xcq = torch.tensor(cqi_idx[start:end],  dtype=torch.long).to(DEVICE)
+            xc  = torch.tensor(
+                x_scaled[start:end], dtype=torch.float32).to(DEVICE)
+            xcq = torch.tensor(
+                cqi_idx[start:end], dtype=torch.long).to(DEVICE)
             pred = s1_model(xc, xcq)                     # (B, N)
-            all_errors[start:end, :, ci] = pred.cpu().numpy()
+            fine_errors[start:end, :, ci] = (
+                pred.cpu().numpy() + penalties[ci])
 
-    # Optimal = argmin across compression levels, per user
-    opt_labels = np.argmin(all_errors, axis=2)  # (n, N)
-    return opt_labels, all_errors
+    # Average within each bin -> (n, N, NUM_BINS)
+    bin_errors = np.zeros((n, N, NUM_BINS), dtype=np.float32)
+    for bi in range(NUM_BINS):
+        lo = bi * BIN_SIZE
+        hi = lo + BIN_SIZE
+        bin_errors[:, :, bi] = fine_errors[:, :, lo:hi].mean(axis=2)
+
+    opt_labels = np.argmin(bin_errors, axis=2)  # (n, N)
+    return opt_labels, bin_errors
 
 # %%
 # ── Generate labels for all 9 configurations ─────────────────
@@ -272,7 +320,6 @@ class CompressionSelector(nn.Module):
             layers += [nn.Linear(prev, h), nn.BatchNorm1d(h),
                        nn.ReLU(), nn.Dropout(0.15)]
             prev = h
-        # Output: N * 16 logits → reshape to (B, N, 16)
         layers.append(nn.Linear(prev, num_users * NUM_COMP_LEVELS))
         self.net = nn.Sequential(*layers)
 
@@ -280,8 +327,8 @@ class CompressionSelector(nn.Module):
         cqi_emb = self.cqi_embed(x_cqi)                         # (B, N, 4)
         x = torch.cat([x_cont, cqi_emb], dim=-1)                # (B, N, 8)
         x = x.view(x.size(0), -1)                               # (B, N*8)
-        logits = self.net(x)                                     # (B, N*16)
-        return logits.view(-1, self.num_users, NUM_COMP_LEVELS)  # (B, N, 16)
+        logits = self.net(x)                                     # (B, N*C)
+        return logits.view(-1, self.num_users, NUM_COMP_LEVELS)  # (B, N, C)
 
 
 # Quick shape check

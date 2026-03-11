@@ -47,12 +47,12 @@ TRIMMED_DIR = None
 RESULTS_DIR = None
 
 if MODE == "pca":
-    COMP_LEVELS = list(range(5, 201, 5))       # 25, 50, 75, ... 400
+    COMP_LEVELS = list(range(5, 81, 5))       # 25, 50, 75, ... 400
 else:
     COMP_LEVELS = list(range(4, 373, 16))       # 4, 20, 36, ... 372 (AE levels)
-MAX_FRAMES = 2000
+MAX_FRAMES = 1000
 FPS = 60
-DEADLINE_MS = 5.0
+# DEADLINE_MS = 5.0
 FPS_OPTIONS = [45, 60, 72, 90, 120]            # Per-user frame rate choices
 
 # file prefix for sweep summaries (pca or ae)

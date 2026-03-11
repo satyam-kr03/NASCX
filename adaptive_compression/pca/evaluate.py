@@ -82,6 +82,9 @@ def evaluate_compression(
     logging.info(f"  Working res : {W}x{H}")
     logging.info("=" * 60)
 
+    max_n_comp = max(components_list) if components_list else 0
+    max_pca_size_bytes = int(max_n_comp * 4 + ((max_n_comp + 1) * n_pixels * 4) / n_amort)
+
     done = 0
     for frame_idx, frame_uint8 in stream_test_frames(video_path, test_indices, img_size):
         # Normalise to [0, 1] — single frame, tiny memory
@@ -97,15 +100,15 @@ def evaluate_compression(
             pict_type = "?"
 
         # --- Uncompressed baseline row (components == 0) ---------------
-        all_results.append({
-            "frame": frame_idx,
-            "components": 0,
-            "mse": 0.0,
-            "size_bytes": raw_size_bytes,
-            "frame_complexity": enc_size,
-            "raw_size_bytes": raw_size_bytes,
-            "pict_type": pict_type,
-        })
+        # all_results.append({
+        #     "frame": frame_idx,
+        #     "components": 0,
+        #     "mse": 0.0,
+        #     "size_bytes": raw_size_bytes,
+        #     "frame_complexity": max_pca_size_bytes,
+        #     "raw_size_bytes": raw_size_bytes,
+        #     "pict_type": pict_type,
+        # })
 
         # --- PCA-compressed rows ---------------------------------------
         for n_comp in components_list:
@@ -122,7 +125,10 @@ def evaluate_compression(
             # Amortise one-time cost over entire video (all frames).
             coeffs_bytes = n_comp * 4
             model_bytes = (n_comp + 1) * n_pixels * 4
+
             pca_size_bytes = int(coeffs_bytes + model_bytes / n_amort)
+
+            # pca_size_bytes = int(coeffs_bytes) # ignoring basis overhead for now
 
             # Cumulative explained variance ratio for this component count
             expl_var = float(cumvar[n_comp - 1])
@@ -132,7 +138,7 @@ def evaluate_compression(
                 "components": n_comp,
                 "mse": mse,
                 "size_bytes": pca_size_bytes,
-                "frame_complexity": enc_size,
+                "frame_complexity": max_pca_size_bytes,
                 "raw_size_bytes": raw_size_bytes,
                 "pict_type": pict_type,
                 "explained_variance": expl_var,

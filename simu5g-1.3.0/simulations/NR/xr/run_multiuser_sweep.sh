@@ -16,7 +16,7 @@ cd "$SCRIPT_DIR"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 MODE="pca"
-MIN_USERS=3
+MIN_USERS=2
 MAX_USERS=10
 CUSTOM_USERS=""
 SIM_TIME=35

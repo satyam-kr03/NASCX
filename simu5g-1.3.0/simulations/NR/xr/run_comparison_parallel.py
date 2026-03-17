@@ -53,7 +53,8 @@ else:
 MAX_FRAMES = 1000
 FPS = 60
 # DEADLINE_MS = 5.0
-FPS_OPTIONS = [45, 60, 72, 90, 120]            # Per-user frame rate choices
+# FPS_OPTIONS = [45, 60, 72, 90, 120]            # Per-user frame rate choices
+FPS_OPTIONS = [60]            # Per-user frame rate choices
 
 # file prefix for sweep summaries (pca or ae)
 FILE_PREFIX = None
@@ -142,6 +143,7 @@ def build_sim_cmd(
         cmd.append(f'--*.ue[{i}].app[0].resultFile="{result_file}"')
         cmd.append(f"--*.ue[{i}].app[0].expectedFrames={MAX_FRAMES}")
 
+    print(cmd)
     return cmd
 
 

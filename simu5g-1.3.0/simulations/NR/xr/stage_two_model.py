@@ -43,8 +43,8 @@ os.makedirs(STAGE2_DIR, exist_ok=True)
 
 # ── Fine compression levels (used for Stage 1 sweep) ─────────
 if MODE == "pca":
-    COMP_LEVELS_FINE = list(range(5, 201, 5))   # 40 fine levels
-    BIN_SIZE = 5                                # CLs per bin
+    COMP_LEVELS_FINE = list(range(5, 81, 5))    # 16 fine levels (matches training data)
+    BIN_SIZE = 1                                # each CL is its own class
 else:
     COMP_LEVELS_FINE = list(range(4, 373, 16))  # 24 fine levels
     BIN_SIZE = 4
@@ -85,7 +85,7 @@ S2_PATIENCE     = 20
 # penalty incurred when large frames miss the deadline or are lost.
 # Calibrated so the label distribution peaks around CL 50-90 (the
 # static-comparison sweet-spot) rather than maxing out at CL 200.
-LOSS_PENALTY_WEIGHT = 300.0     # peak penalty added at max CL
+LOSS_PENALTY_WEIGHT = 0.0       # disabled — let Stage 1 predictions determine labels directly
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Device: {DEVICE}")
@@ -187,60 +187,110 @@ def extract_static_features(df, num_users):
 # problem tractable (the previous 40-class accuracy was ~25%).
 
 # %%
-def _loss_penalty(comp_val):
-    """Quadratic penalty discouraging excessively high CLs."""
-    ratio = comp_val / max(COMP_LEVELS_FINE)
-    return LOSS_PENALTY_WEIGHT * ratio * ratio
+@torch.no_grad()
+def _predict_batch(s1_model, static_cont, comp_col, cqi_idx, scaler,
+                   batch_size=512):
+    """Predict effective error for given static features + CL assignment."""
+    n = static_cont.shape[0]
+    x_full = np.concatenate([static_cont, comp_col[:, :, None]], axis=-1)
+    shape = x_full.shape
+    x_scaled = scaler.transform(
+        x_full.reshape(-1, NUM_S1_CONT)).reshape(shape)
+
+    preds = np.zeros((n, static_cont.shape[1]), dtype=np.float32)
+    for start in range(0, n, batch_size):
+        end = min(start + batch_size, n)
+        xc  = torch.tensor(
+            x_scaled[start:end], dtype=torch.float32).to(DEVICE)
+        xcq = torch.tensor(
+            cqi_idx[start:end], dtype=torch.long).to(DEVICE)
+        preds[start:end] = s1_model(xc, xcq).cpu().numpy()
+    return preds  # (n, N)
 
 
 @torch.no_grad()
-def generate_labels(s1_model, static_cont, cqi_idx, scaler, batch_size=512):
+def generate_labels(s1_model, static_cont, cqi_idx, orig_comp, scaler,
+                    batch_size=512, max_rounds=3):
     """
-    Per-user sweep with loss penalty + bin averaging.
+    Coordinate-descent label generation.
+
+    For each user in turn, sweep their CL while holding all other users
+    at their current-best CL.  Pick the CL that minimises the **total**
+    predicted error (sum across all users).  Repeat for `max_rounds`.
+
+    This keeps Stage-1 inputs close to the training distribution (only
+    one user changes at a time) and captures cross-user congestion.
 
     Returns
     -------
-    opt_labels : (n, N) int        — optimal BIN index per user (0 .. NUM_BINS-1)
-    bin_errors : (n, N, NUM_BINS)  — average penalised error per bin
+    opt_labels : (n, N) int                   — optimal CL index per user
+    all_errors : (n, N, NUM_FINE_LEVELS)      — per-user error at each CL
+                                                (from the final round)
     """
     s1_model.eval()
     n, N, _ = static_cont.shape
-    F_levels = NUM_FINE_LEVELS
+    F = NUM_FINE_LEVELS
+    cl_vals = np.array(COMP_LEVELS_FINE, dtype=np.float32)
 
-    # Pre-compute per-fine-level penalty
-    penalties = np.array([_loss_penalty(c) for c in COMP_LEVELS_FINE],
-                         dtype=np.float32)  # (F_levels,)
+    # Map each CL value → index (for orig_comp init)
+    cl_to_idx = {int(c): i for i, c in enumerate(COMP_LEVELS_FINE)}
 
-    # Sweep all fine CLs (each user independently)
-    fine_errors = np.zeros((n, N, F_levels), dtype=np.float32)
+    # ── Initialise from training-data CLs (clipped to valid set) ──
+    current_cl  = np.zeros((n, N), dtype=np.float32)
+    current_idx = np.zeros((n, N), dtype=np.int64)
+    for u in range(N):
+        for i in range(n):
+            raw = int(orig_comp[i, u])
+            # snap to nearest valid CL
+            idx = int(np.argmin(np.abs(cl_vals - raw)))
+            current_idx[i, u] = idx
+            current_cl[i, u]  = cl_vals[idx]
 
+    # ── Coordinate descent ────────────────────────────────────
+    for rnd in range(max_rounds):
+        changed = False
+        for u in range(N):
+            best_total = np.full(n, float('inf'), dtype=np.float32)
+            best_ci    = current_idx[:, u].copy()
+
+            for ci, comp_val in enumerate(COMP_LEVELS_FINE):
+                comp_col = current_cl.copy()          # (n, N)
+                comp_col[:, u] = comp_val             # only change user u
+
+                preds = _predict_batch(
+                    s1_model, static_cont, comp_col,
+                    cqi_idx, scaler, batch_size)      # (n, N)
+                total_err = preds.sum(axis=1)         # (n,)
+
+                improved = total_err < best_total
+                best_total = np.where(improved, total_err, best_total)
+                best_ci    = np.where(improved, ci, best_ci)
+
+            new_cl = cl_vals[best_ci]
+            if not np.array_equal(new_cl, current_cl[:, u]):
+                changed = True
+            current_idx[:, u] = best_ci
+            current_cl[:, u]  = new_cl
+
+        print(f"    CD round {rnd+1}: changed={changed}")
+        if not changed:
+            break
+
+    # ── Build per-user per-CL error surface (for evaluation) ──
+    all_errors = np.zeros((n, N, F), dtype=np.float32)
     for ci, comp_val in enumerate(COMP_LEVELS_FINE):
-        comp_col = np.full((n, N, 1), comp_val, dtype=np.float32)
-        x_full   = np.concatenate([static_cont, comp_col], axis=-1)  # (n,N,5)
+        comp_col = current_cl.copy()
+        for u in range(N):
+            comp_col_u = current_cl.copy()
+            comp_col_u[:, u] = comp_val
+            preds = _predict_batch(
+                s1_model, static_cont, comp_col_u,
+                cqi_idx, scaler, batch_size)
+            all_errors[:, u, ci] = preds[:, u]
 
-        shape = x_full.shape
-        x_scaled = scaler.transform(
-            x_full.reshape(-1, NUM_S1_CONT)).reshape(shape)
-
-        for start in range(0, n, batch_size):
-            end = min(start + batch_size, n)
-            xc  = torch.tensor(
-                x_scaled[start:end], dtype=torch.float32).to(DEVICE)
-            xcq = torch.tensor(
-                cqi_idx[start:end], dtype=torch.long).to(DEVICE)
-            pred = s1_model(xc, xcq)                     # (B, N)
-            fine_errors[start:end, :, ci] = (
-                pred.cpu().numpy() + penalties[ci])
-
-    # Average within each bin -> (n, N, NUM_BINS)
-    bin_errors = np.zeros((n, N, NUM_BINS), dtype=np.float32)
-    for bi in range(NUM_BINS):
-        lo = bi * BIN_SIZE
-        hi = lo + BIN_SIZE
-        bin_errors[:, :, bi] = fine_errors[:, :, lo:hi].mean(axis=2)
-
-    opt_labels = np.argmin(bin_errors, axis=2)  # (n, N)
-    return opt_labels, bin_errors
+    # With BIN_SIZE=1, bins == fine levels
+    opt_labels = current_idx
+    return opt_labels, all_errors
 
 # %%
 # ── Generate labels for all 9 configurations ─────────────────
@@ -248,11 +298,13 @@ label_data = {}  # n_u -> (static_cont, cqi_idx, opt_labels, all_errors, orig_co
 
 for n_u in range(2, 11):
     sc, cq, oc, ae = extract_static_features(df, n_u)
-    opt_labels, all_errors = generate_labels(s1_models[n_u], sc, cq, global_scaler)
+    print(f"\nnum_users={n_u}")
+    opt_labels, all_errors = generate_labels(
+        s1_models[n_u], sc, cq, oc, global_scaler)
     label_data[n_u] = (sc, cq, opt_labels, all_errors, oc, ae)
 
     opt_comp_vals = np.array(COMP_LEVELS)[opt_labels]
-    print(f"num_users={n_u:>2d}  samples={len(sc):>5d}  "
+    print(f"  samples={len(sc):>5d}  "
           f"label distribution: {dict(zip(*np.unique(opt_labels, return_counts=True)))}")
 
 print("\n✓ Labels generated for all configurations.")

@@ -32,7 +32,7 @@ DATASET_PATH = f"datasets_{MODE}/random_cl_dataset_clean.csv"
 MODEL_DIR    = f"stage_one_models_{MODE}"
 os.makedirs(MODEL_DIR, exist_ok=True)
 if MODE == "pca":
-    COMP_LEVELS = list(range(5, 201, 5))   # 16 levels: 25, 50, …, 400
+    COMP_LEVELS = list(range(5, 81, 5))    # 16 levels: 5, 10, …, 80
 else:   
     COMP_LEVELS     = list(range(4, 373, 16))   # 24 levels: 4, 20, 36, …, 372
 NUM_COMP_LEVELS = len(COMP_LEVELS)

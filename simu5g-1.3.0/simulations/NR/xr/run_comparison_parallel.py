@@ -143,7 +143,7 @@ def build_sim_cmd(
         cmd.append(f'--*.ue[{i}].app[0].resultFile="{result_file}"')
         cmd.append(f"--*.ue[{i}].app[0].expectedFrames={MAX_FRAMES}")
 
-    print(cmd)
+    # print(cmd)
     return cmd
 
 

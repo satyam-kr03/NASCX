@@ -67,11 +67,11 @@ CQI_EMBED_DIM   = 4
 
 # Stage 1 config (must match model.ipynb)
 S1_HIDDEN       = [256, 128, 64]
-S1_CONT_FEATS   = ['meantrafficsize', 'stdtrafficsize', 'frameComplexity', 'frame_rate', 'components']
+S1_CONT_FEATS   = ['meantrafficsize', 'frameComplexity', 'frame_rate', 'components']
 NUM_S1_CONT     = len(S1_CONT_FEATS)
 
 # Stage 2 config
-STATIC_FEATS     = ['meantrafficsize', 'stdtrafficsize', 'frameComplexity', 'frame_rate']
+STATIC_FEATS     = ['meantrafficsize', 'frameComplexity', 'frame_rate']
 NUM_STATIC_FEATS = len(STATIC_FEATS)
 S2_HIDDEN       = [256, 128]
 S2_BATCH        = 256
@@ -111,7 +111,7 @@ class CompressionPredictor(nn.Module):
             hidden = S1_HIDDEN
         self.num_users = num_users
         self.cqi_embed = nn.Embedding(cqi_vocab, cqi_dim)
-        per_user = NUM_S1_CONT + cqi_dim   # 5 + 4 = 9
+        per_user = NUM_S1_CONT + cqi_dim   # 4 + 4 = 8
         in_dim   = num_users * per_user
         layers = []
         prev = in_dim
@@ -346,7 +346,7 @@ class CompressionSelector(nn.Module):
 
     Inputs
     ------
-    x_cont : (B, N, 4)  – normalised [meantrafficsize, stdtrafficsize,
+    x_cont : (B, N, 3)  – normalised [meantrafficsize,
                            frameComplexity, frame_rate]
     x_cqi  : (B, N)     – CQI index (0-10)
 
@@ -363,7 +363,7 @@ class CompressionSelector(nn.Module):
         self.num_users = num_users
         self.cqi_embed = nn.Embedding(cqi_vocab, cqi_dim)
 
-        per_user = NUM_STATIC_FEATS + cqi_dim  # 4 + 4 = 8  (no components!)
+        per_user = NUM_STATIC_FEATS + cqi_dim  # 3 + 4 = 7  (no components!)
         in_dim   = num_users * per_user
 
         layers = []

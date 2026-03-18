@@ -28,7 +28,6 @@
   ],
   "cont_feat_names": [
     "meantrafficsize",
-    "stdtrafficsize",
     "frameComplexity",
     "frame_rate",
     "components"

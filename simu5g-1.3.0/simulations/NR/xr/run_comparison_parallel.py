@@ -51,10 +51,10 @@ if MODE == "pca":
 else:
     COMP_LEVELS = list(range(4, 373, 16))       # 4, 20, 36, ... 372 (AE levels)
 MAX_FRAMES = 1000
-FPS = 60
+# FPS = 60
 # DEADLINE_MS = 5.0
-# FPS_OPTIONS = [45, 60, 72, 90, 120]            # Per-user frame rate choices
-FPS_OPTIONS = [60]            # Per-user frame rate choices
+FPS_OPTIONS = [45, 60, 72, 90, 120]            # Per-user frame rate choices
+# FPS_OPTIONS = [60]            # Per-user frame rate choices
 
 # file prefix for sweep summaries (pca or ae)
 FILE_PREFIX = None
@@ -84,7 +84,7 @@ def assign_videos(num_users: int, seed: int = 42) -> list[str]:
 
 def assign_fps(num_users: int, seed: int = 42) -> list[int]:
     """Assign a random frame rate to each user from FPS_OPTIONS."""
-    rng = random.Random(seed + 1000)
+    rng = random.Random(seed + 10)
     return [rng.choice(FPS_OPTIONS) for _ in range(num_users)]
 
 

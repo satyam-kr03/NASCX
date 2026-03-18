@@ -56,45 +56,7 @@ NUM_USERS_SWEEP = list(range(2, 11))  # 2..10 users
 MAX_WORKERS = min(cpu_count(), 32)
 
 
-# ─── Step 1: Pre-compute frame complexity statistics ─────────────────────────
-
-def compute_complexity_stats():
-    """Compute mean and std of frame_complexity for each video.
-    
-    Returns dict: video_name -> {mean_traffic_size, std_traffic_size, complexity_per_frame}
-    """
-    stats = {}
-    for pca_path in PCA_FILES:
-        video_name = pca_path.stem.replace(FILE_PREFIX, "")
-        df = pd.read_csv(pca_path)
-        
-        # Get one row per frame (frame_complexity is same across all comp levels)
-        frame_df = df.drop_duplicates(subset="frame")[["frame", "frame_complexity"]].copy()
-        frame_df = frame_df.sort_values("frame").reset_index(drop=True)
-        
-        # Trim to MAX_FRAMES
-        frame_df = frame_df.head(MAX_FRAMES)
-        
-        mean_fc = float(frame_df["frame_complexity"].mean())
-        std_fc = float(frame_df["frame_complexity"].std())
-        
-        # Store per-frame complexity indexed by frame number
-        complexity_map = dict(zip(frame_df["frame"].astype(int), frame_df["frame_complexity"].astype(float)))
-        
-        stats[video_name] = {
-            "path": str(pca_path),
-            "mean_traffic_size": mean_fc,
-            "std_traffic_size": std_fc,
-            "num_frames": len(frame_df),
-            "complexity_per_frame": complexity_map,
-        }
-        print(f"  {video_name}: {len(frame_df)} frames, "
-              f"mean_complexity={mean_fc:.2f}, std_complexity={std_fc:.2f}")
-    
-    return stats
-
-
-# ─── Step 2: Trim PCA CSV files to first MAX_FRAMES ─────────────────────────
+# ─── Step 1: Trim PCA CSV files to first MAX_FRAMES ─────────────────────────
 
 def trim_pca_files():
     """Create trimmed versions of PCA files with only first MAX_FRAMES frames."""
@@ -208,12 +170,11 @@ def run_simulation(args):
 
 # ─── Step 5: Collect results from a simulation run ──────────────────────────
 
-def collect_run_results(run_info, complexity_stats):
+def collect_run_results(run_info):
     """Collect per-frame data from a single simulation run.
     
     Produces rows matching the desired dataset format:
-        frameNumber, user0_meantrafficsize, user0_stdtrafficsize, 
-        user0_components, user0_effectiveError, user0_frameComplexity,
+        frameNumber, user0_components, user0_effectiveError,
         user0_delay_ms, user0_cqi, ..., num_users
     """
     num_users = run_info["num_users"]
@@ -249,8 +210,6 @@ def collect_run_results(run_info, complexity_stats):
         skip_frame = False
         
         for i in range(num_users):
-            video = video_assignments[i]
-            stats = complexity_stats[video]
             prefix = f"user{i}_"
             
             # Get this user's data for this frame
@@ -262,17 +221,9 @@ def collect_run_results(run_info, complexity_stats):
             
             frame_row = frame_df.iloc[0]
             
-            # Pre-computed complexity stats for this user's video
-            row[prefix + "meantrafficsize"] = stats["mean_traffic_size"]
-            row[prefix + "stdtrafficsize"] = stats["std_traffic_size"]
-            
             # Per-frame data from simulation
             row[prefix + "components"] = int(frame_row["components"])
             row[prefix + "effectiveError"] = float(frame_row["effectiveError"])
-            
-            # Frame complexity from PCA file
-            fc = stats["complexity_per_frame"].get(frame_num, 0.0)
-            row[prefix + "frameComplexity"] = fc
             
             # Delay  
             row[prefix + "delay_ms"] = float(frame_row["delay_ms"])
@@ -326,34 +277,18 @@ def main():
     print(f"  Workers: {MAX_WORKERS}")
     print(f"=" * 60)
     
-    # Step 1: Compute complexity stats
-    print("\n[1/5] Computing frame complexity statistics...")
-    complexity_stats = compute_complexity_stats()
-    
-    # Save stats to JSON for reference
-    DATASET_DIR.mkdir(parents=True, exist_ok=True)
-    stats_file = DATASET_DIR / "complexity_stats.json"
-    stats_for_json = {
-        k: {kk: vv for kk, vv in v.items() if kk != "complexity_per_frame"}
-        for k, v in complexity_stats.items()
-    }
-    with open(stats_file, "w") as f:
-        json.dump(stats_for_json, f, indent=2)
-    print(f"  Saved to {stats_file}")
-    
-    # Step 2: Trim PCA files
-    print(f"\n[2/5] Trimming PCA files to first {MAX_FRAMES} frames...")
+    # Step 1: Trim PCA files
+    print(f"\n[1/4] Trimming PCA files to first {MAX_FRAMES} frames...")
     trimmed_paths = trim_pca_files()
     
     if args.dry_run:
         print("\n[DRY RUN] Stopping before simulations.")
         print("Trimmed files at:", TRIMMED_DIR)
-        print("Complexity stats at:", stats_file)
         return
     
-    # Step 3: Prepare simulation jobs
-    print("\n[3/5] Preparing simulation jobs...")
-    video_names = list(complexity_stats.keys())
+    # Step 2: Prepare simulation jobs
+    print("\n[2/4] Preparing simulation jobs...")
+    video_names = list(trimmed_paths.keys())
     
     jobs = []
     for num_users in NUM_USERS_SWEEP:
@@ -375,8 +310,8 @@ def main():
     print(f"  Total simulation jobs: {total_jobs}")
     print(f"  Using {MAX_WORKERS} parallel workers")
     
-    # Step 4: Run simulations in parallel
-    print(f"\n[4/5] Running {total_jobs} simulations...")
+    # Step 3: Run simulations in parallel
+    print(f"\n[3/4] Running {total_jobs} simulations...")
     
     completed_runs = []
     with Pool(processes=MAX_WORKERS) as pool:
@@ -391,12 +326,12 @@ def main():
     
     print(f"\n  Completed: {len(completed_runs)}/{total_jobs}")
     
-    # Step 5: Collect and assemble dataset
-    print("\n[5/5] Collecting results and assembling dataset...")
+    # Step 4: Collect and assemble dataset
+    print("\n[4/4] Collecting results and assembling dataset...")
     
     all_rows = []
     for run_info in completed_runs:
-        rows = collect_run_results(run_info, complexity_stats)
+        rows = collect_run_results(run_info)
         all_rows.extend(rows)
         print(f"  n={run_info['num_users']} r={run_info['repetition']}: "
               f"{len(rows)} rows")
@@ -412,8 +347,8 @@ def main():
     user_cols = []
     max_users = max(r["num_users"] for r in completed_runs)
     for i in range(max_users):
-        for suffix in ["meantrafficsize", "stdtrafficsize", "components",
-                        "effectiveError", "frameComplexity", "delay_ms", "cqi",
+        for suffix in ["components",
+                        "effectiveError", "delay_ms", "cqi",
                         "frame_rate"]:
             col = f"user{i}_{suffix}"
             if col in dataset.columns:

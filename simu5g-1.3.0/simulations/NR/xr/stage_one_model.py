@@ -85,14 +85,14 @@ plt.show()
 # ## 2. Data Preprocessing
 # 
 # For each `num_users` configuration we extract per-user features:
-# - **Continuous (5):** `meantrafficsize`, `stdtrafficsize`, `frameComplexity`, `frame_rate`, `components`
+# - **Continuous (4):** `meantrafficsize`, `frameComplexity`, `frame_rate`, `components`
 # - **Discrete (1):** `CQI` → mapped to embedding index `[0, 9]`
 # - **Target:** `effectiveError` (raw value used for training)
 # 
 # A single `StandardScaler` is fit on the pooled continuous features across all user slots so that the same physical quantity always gets the same normalization.
 
 # %%
-CONT_FEAT_NAMES = ['meantrafficsize', 'stdtrafficsize', 'frameComplexity', 'frame_rate', 'components']
+CONT_FEAT_NAMES = ['meantrafficsize', 'frameComplexity', 'frame_rate', 'components']
 NUM_CONT_FEATS  = len(CONT_FEAT_NAMES)
 
 def extract_features(df, num_users):
@@ -170,7 +170,7 @@ for n_u in range(2, 11):
 # - **Hidden layers** `[256 → 128 → 64]` with BatchNorm, ReLU, and Dropout
 # - **Output:** one predicted effective error per user
 # 
-# The full input is the concatenation of all users' features (continuous + CQI embedding), so the model inherently captures **cross-user network dependencies** (e.g., how one user's traffic load affects others' quality). Each user contributes 5 continuous features (`meantrafficsize`, `stdtrafficsize`, `frameComplexity`, `frame_rate`, `components`) plus a 4-dim CQI embedding = 9 features per user.
+# The full input is the concatenation of all users' features (continuous + CQI embedding), so the model inherently captures **cross-user network dependencies** (e.g., how one user's traffic load affects others' quality). Each user contributes 4 continuous features (`meantrafficsize`, `frameComplexity`, `frame_rate`, `components`) plus a 4-dim CQI embedding = 8 features per user.
 
 # %%
 class CompressionPredictor(nn.Module):
@@ -179,7 +179,7 @@ class CompressionPredictor(nn.Module):
 
     Inputs
     ------
-    x_cont : (B, N, 5)   – normalised [meantrafficsize, stdtrafficsize,
+    x_cont : (B, N, 4)   – normalised [meantrafficsize,
                             frameComplexity, frame_rate, components]
     x_cqi  : (B, N)      – CQI index (0-9)
 
@@ -196,7 +196,7 @@ class CompressionPredictor(nn.Module):
         self.num_users = num_users
         self.cqi_embed = nn.Embedding(cqi_vocab, cqi_dim)
 
-        per_user = NUM_CONT_FEATS + cqi_dim          # 5 + 4 = 9
+        per_user = NUM_CONT_FEATS + cqi_dim          # 4 + 4 = 8
         in_dim   = num_users * per_user
 
         layers = []
@@ -413,10 +413,10 @@ def find_optimal_compression(model, user_features, user_cqi, scaler,
     Parameters
     ----------
     model          : trained CompressionPredictor
-    user_features  : (N, 4) array — [meantrafficsize, stdtrafficsize,
+    user_features  : (N, 3) array — [meantrafficsize,
                      frameComplexity, frame_rate] per user  (NO components column)
     user_cqi       : (N,) int array — CQI indices (0-based)
-    scaler         : fitted StandardScaler (expects 5-feature input)
+    scaler         : fitted StandardScaler (expects 4-feature input)
 
     Returns
     -------
@@ -432,11 +432,11 @@ def find_optimal_compression(model, user_features, user_cqi, scaler,
             best_c, best_total = current_comp[u], float('inf')
 
             # Build batch: one row per candidate compression for user u
-            x_cont = np.tile(user_features, (len(comp_levels), 1, 1))  # (16, N, 4)
+            x_cont = np.tile(user_features, (len(comp_levels), 1, 1))  # (16, N, 3)
             comp_col = np.array([current_comp] * len(comp_levels), dtype=np.float32)  # (16, N)
             for ci, cl in enumerate(comp_levels):
                 comp_col[ci, u] = cl
-            x_full = np.concatenate([x_cont, comp_col[..., None]], axis=-1)  # (16, N, 5)
+            x_full = np.concatenate([x_cont, comp_col[..., None]], axis=-1)  # (16, N, 4)
             x_cqi  = np.tile(user_cqi, (len(comp_levels), 1))                # (16, N)
 
             errors = predict_errors(model, x_full, x_cqi, scaler)            # (16, N)
@@ -474,9 +474,9 @@ xc_raw = global_scaler.inverse_transform(
     xc_s.numpy().reshape(-1, NUM_CONT_FEATS)
 ).reshape(demo_n_u, NUM_CONT_FEATS)
 
-user_feats_no_comp = xc_raw[:, :4]                   # (N, 4) without components
+user_feats_no_comp = xc_raw[:, :3]                   # (N, 3) without components
 user_cqi_idx       = xcqi_s.numpy()                    # (N,)
-actual_comp        = xc_raw[:, 4].astype(int).tolist() # original components
+actual_comp        = xc_raw[:, 3].astype(int).tolist() # original components
 actual_error       = yt_s.numpy()                      # original-scale error
 
 opt_comp, opt_errors = find_optimal_compression(

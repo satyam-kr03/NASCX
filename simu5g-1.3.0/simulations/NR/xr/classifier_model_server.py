@@ -1,0 +1,220 @@
+"""
+FastAPI server for Classifier Compression Selector inference.
+
+Hosts the PyTorch classifier models (2–10 users) and exposes an endpoint
+that returns optimal compression levels for each user given their
+current video characteristics (fps) and channel quality (cqi).
+
+Usage:
+    python classifier_model_server.py                    # default: port 8000
+    python classifier_model_server.py --port 8080        # custom port
+    python classifier_model_server.py --device cuda      # force GPU
+"""
+
+import argparse
+import logging
+import os
+import pickle
+import time
+import warnings
+from contextlib import asynccontextmanager
+
+import numpy as np
+import torch
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+
+# Import architecture and utilities from classifier script
+from classifier import MultiUserCompressionNet, class_to_components
+
+# ── Paths ─────────────────────────────────────────────────────
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR = None
+
+# ── Logging ───────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+log = logging.getLogger("classifier_model_server")
+
+# ── Global state (populated on startup) ───────────────────────
+models: dict[int, MultiUserCompressionNet] = {}
+scalers: dict[int, object] = {}
+DEVICE = torch.device("cpu")
+
+
+# ── Request / Response schemas ────────────────────────────────
+# We keep the exact same Request format to avoid changes in client code,
+# even though this classifier model only uses frame_rate and cqi.
+class UserFeatures(BaseModel):
+    meantrafficsize: float = Field(..., description="Mean traffic size of the user's video")
+    stdtrafficsize: float  = Field(..., description="Std of traffic size")
+    frameComplexity: float = Field(..., description="Frame complexity metric")
+    frame_rate: float      = Field(..., description="Video frame rate in fps (e.g. 45, 60, 72, 90, 120)")
+    cqi: int               = Field(..., ge=5, le=15, description="Channel Quality Indicator (5–15)")
+
+
+class PredictRequest(BaseModel):
+    users: list[UserFeatures] = Field(
+        ..., min_length=2, max_length=10,
+        description="List of per-user features (2–10 users)",
+    )
+
+
+class UserPrediction(BaseModel):
+    user_id: int
+    optimal_components: int = Field(..., description="Chosen compression level (5-80)")
+    confidence: float       = Field(..., description="Softmax probability of the chosen level")
+    top3: list[dict]        = Field(..., description="Top-3 predictions with probabilities")
+
+
+class PredictResponse(BaseModel):
+    num_users: int
+    inference_us: float = Field(..., description="Inference latency in microseconds")
+    predictions: list[UserPrediction]
+
+
+class HealthResponse(BaseModel):
+    status: str
+    device: str
+    loaded_models: list[int]
+
+
+# ── Startup / shutdown ────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global models, scalers, DEVICE, MODEL_DIR
+
+    MODEL_DIR = os.path.join(SCRIPT_DIR, "models")
+    log.info(f"Model dir: {MODEL_DIR}")
+
+    # Parse device from env or default
+    device_str = os.environ.get("MODEL_DEVICE", "cpu")
+    DEVICE = torch.device(device_str)
+    log.info(f"Using device: {DEVICE}")
+
+    # Load models
+    for n_u in range(2, 11):
+        stem = os.path.join(MODEL_DIR, f"compression_{n_u}users")
+        model_path = stem + ".pth"
+        scaler_path = stem + "_scaler.pkl"
+        
+        if not os.path.exists(model_path) or not os.path.exists(scaler_path):
+            log.warning(f"Model or scaler for {n_u} users not found (tried {stem}.pth). Skipping.")
+            continue
+
+        model = MultiUserCompressionNet(n_u)
+        model.load_state_dict(
+            torch.load(model_path, map_location=DEVICE, weights_only=True)
+        )
+        model.to(DEVICE)
+        model.eval()
+        models[n_u] = model
+        
+        with open(scaler_path, "rb") as f:
+            scalers[n_u] = pickle.load(f)
+            
+        log.info(f"  Loaded {n_u}-user model and scaler from {MODEL_DIR}")
+
+    if not models:
+        log.warning("No models loaded! Make sure to train models via classifier.py first.")
+    else:
+        log.info(f"✓ All {len(models)} models ready for inference.")
+    yield
+    log.info("Shutting down model server.")
+
+
+# ── App ───────────────────────────────────────────────────────
+app = FastAPI(
+    title="Classifier Compression Selector API",
+    description="Classifier model server for XR compression.",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+
+@app.get("/health", response_model=HealthResponse)
+async def health():
+    return HealthResponse(
+        status="ok",
+        device=str(DEVICE),
+        loaded_models=sorted(models.keys()),
+    )
+
+
+@app.post("/predict", response_model=PredictResponse)
+async def predict(req: PredictRequest):
+    n_users = len(req.users)
+
+    if n_users not in models:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No model for {n_users} users. Supported: {list(models.keys())}.",
+        )
+
+    # ── Build input tensors ───────────────────────────────────
+    # classifier gives models interleaved [cqi0, fps0, cqi1, fps1, ...] inputs
+    raw_state = []
+    for u in req.users:
+        raw_state.append(u.cqi)
+        raw_state.append(u.frame_rate)
+    
+    arr = np.array(raw_state, dtype=np.float32).reshape(1, -1)
+    
+    # Scale
+    scaler = scalers[n_users]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        scaled = scaler.transform(arr)
+        
+    x = torch.tensor(scaled, dtype=torch.float32).to(DEVICE)
+
+    # ── Inference ─────────────────────────────────────────────
+    t0 = time.perf_counter()
+    with torch.no_grad():
+        outputs = models[n_users](x)  # list of (1, NUM_CLASSES) tensors
+    if DEVICE.type == "cuda":
+        torch.cuda.synchronize()
+    inference_us = (time.perf_counter() - t0) * 1e6
+
+    # ── Post-process ──────────────────────────────────────────
+    predictions = []
+    for u in range(n_users):
+        logits = outputs[u][0] # (NUM_CLASSES,)
+        probs = torch.softmax(logits, dim=0).cpu().numpy()  # (NUM_CLASSES,)
+        pred_idx = probs.argmax()
+        
+        top3_idx = np.argsort(probs)[::-1][:3]
+        top3 = [
+            {"components": class_to_components(int(i)), "probability": round(float(probs[i]), 4)}
+            for i in top3_idx
+        ]
+        
+        predictions.append(UserPrediction(
+            user_id=u,
+            optimal_components=class_to_components(int(pred_idx)),
+            confidence=round(float(probs[pred_idx]), 4),
+            top3=top3,
+        ))
+
+    return PredictResponse(
+        num_users=n_users,
+        inference_us=round(inference_us, 1),
+        predictions=predictions,
+    )
+
+
+# ── Entry point ───────────────────────────────────────────────
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Classifier Compression Selector API")
+    parser.add_argument("--host", default="0.0.0.0", help="Bind address")
+    parser.add_argument("--port", type=int, default=8000, help="Port")
+    parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"],
+                        help="Inference device")
+    args = parser.parse_args()
+
+    os.environ["MODEL_DEVICE"] = args.device
+
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")

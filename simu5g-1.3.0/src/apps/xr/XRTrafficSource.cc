@@ -470,14 +470,28 @@ namespace simu5g
                 fi.mse = stod(fields[2]);
                 fi.size_bytes = stoi(fields[3]);
 
-                // Extract frame_complexity if available (column 4)
+                // Columns from our python scripts: 
+                // frame(0), components(1), mse(2), size_bytes(3), error_at_k80(4), error_ratio(5)
+                // (Note: older datasets might have frameComplexity as col 4 instead)
+
                 if (fields.size() >= 5)
                 {
-                    double fc = stod(fields[4]);
-                    // Store once per frame (same for all comp levels)
+                    double fc_or_at80 = stod(fields[4]);
+                    
+                    // Standard frame setup: col 4 is error_at_k80
+                    if (frameErrorAt80_.find(fi.frame_number) == frameErrorAt80_.end())
+                    {
+                        frameErrorAt80_[fi.frame_number] = fc_or_at80;
+                        // Also try to read error_ratio
+                        if (fields.size() >= 6) {
+                            frameErrorRatio_[fi.frame_number] = stod(fields[5]);
+                        }
+                    }
+                    
+                    // Keep frameComplexity population for legacy compatibility
                     if (frameComplexity_.find(fi.frame_number) == frameComplexity_.end())
                     {
-                        frameComplexity_[fi.frame_number] = fc;
+                        frameComplexity_[fi.frame_number] = fc_or_at80;
                     }
                 }
 
@@ -798,12 +812,18 @@ namespace simu5g
             return availableComponents_[availableComponents_.size() / 2];
         }
 
-        // Get this frame's complexity
-        double myFrameComplexity = meanTrafficSize_;  // fallback
-        auto fcIt = frameComplexity_.find(frameNum);
-        if (fcIt != frameComplexity_.end())
-        {
-            myFrameComplexity = fcIt->second;
+        // Get this frame's regression metrics
+        double myErrorAt80 = 1000.0;  // fallback
+        double myErrorRatio = 2.0;    // fallback
+        
+        auto er80It = frameErrorAt80_.find(frameNum);
+        if (er80It != frameErrorAt80_.end()) {
+            myErrorAt80 = er80It->second;
+        }
+        
+        auto err0It = frameErrorRatio_.find(frameNum);
+        if (err0It != frameErrorRatio_.end()) {
+            myErrorRatio = err0It->second;
         }
 
         // Build JSON payload: {"users": [{...}, {...}, ...]}
@@ -814,14 +834,14 @@ namespace simu5g
             MacNodeId uid = allUsers[i];
             const XRVideoStats *stats = binder_->getXRVideoStats(uid);
             unsigned int cqi = binder_->getXRCqi(uid);
+            double prevDelayMs = binder_->getXRVideoPrevDelayMs(uid);
 
-            double mean = stats ? stats->meanTrafficSize : 0;
-            double stdv = stats ? stats->stdTrafficSize : 0;
             double frate = stats ? stats->frameRate : 60;
 
-            // For frame complexity: use own data if this is our user,
-            // otherwise use the mean (we don't have per-frame data for other users)
-            double fc = (uid == macNodeId_) ? myFrameComplexity : mean;
+            // For frame regression features: use own data if this is our user,
+            // otherwise use a default estimation/mean.
+            double err80  = (uid == macNodeId_) ? myErrorAt80 : 1000.0;
+            double errRat = (uid == macNodeId_) ? myErrorRatio : 2.0;
 
             // Clamp CQI to model range [5, 15]
             if (cqi == 0) cqi = (unsigned int)modelDefaultCqi_;
@@ -829,11 +849,11 @@ namespace simu5g
             if (cqi > 15) cqi = 15;
 
             if (i > 0) json << ",";
-            json << "{\"meantrafficsize\":" << mean
-                 << ",\"stdtrafficsize\":" << stdv
-                 << ",\"frameComplexity\":" << fc
+            json << "{\"error_at_80\":" << err80
+                 << ",\"error_ratio\":" << errRat
                  << ",\"frame_rate\":" << frate
-                 << ",\"cqi\":" << cqi << "}";
+                 << ",\"cqi\":" << cqi 
+                 << ",\"prev_delay_ms\":" << prevDelayMs << "}";
         }
         json << "]}";
 

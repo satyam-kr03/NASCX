@@ -235,9 +235,11 @@ def collect_run_results(run_info):
             row[prefix + "frame_rate"] = fps_assignments[i]
         
         if not skip_frame:
-            row["num_users"] = num_users
+            row["num_users"]   = num_users
+            row["repetition"]  = run_info["repetition"]   # ← ADD THIS
+            row[f"user{i}_video"] = video_assignments[i]
             rows.append(row)
-    
+
     return rows
 
 
@@ -354,7 +356,7 @@ def main():
             if col in dataset.columns:
                 user_cols.append(col)
     
-    col_order = ["frameNumber"] + user_cols + ["num_users"]
+    col_order = ["frameNumber", "repetition"] + user_cols + ["num_users"]
     # Only keep columns that exist
     col_order = [c for c in col_order if c in dataset.columns]
     dataset = dataset[col_order]

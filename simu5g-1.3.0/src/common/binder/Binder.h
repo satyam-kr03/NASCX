@@ -61,9 +61,10 @@ namespace simu5g
         double meanTrafficSize;
         double stdTrafficSize;
         double frameRate;
+        double prevDelayMs;
 
-        XRVideoStats() : meanTrafficSize(0), stdTrafficSize(0), frameRate(60) {}
-        XRVideoStats(double m, double s, double fr) : meanTrafficSize(m), stdTrafficSize(s), frameRate(fr) {}
+        XRVideoStats() : meanTrafficSize(0), stdTrafficSize(0), frameRate(60), prevDelayMs(10.0) {}
+        XRVideoStats(double m, double s, double fr) : meanTrafficSize(m), stdTrafficSize(s), frameRate(fr), prevDelayMs(10.0) {}
     };
 
     class Binder : public cSimpleModule
@@ -294,6 +295,17 @@ namespace simu5g
          * Returns all UE MacNodeIds that have XR video stats registered.
          */
         std::vector<MacNodeId> getXRUserNodeIds() const;
+
+        /**
+         * Updates the previous frame delay for a given UE.
+         * Called by XRTrafficReceiver when a frame arrives.
+         */
+        void setXRVideoPrevDelayMs(MacNodeId nodeId, double prevDelayMs);
+
+        /**
+         * Retrieves the previous frame delay for a given UE.
+         */
+        double getXRVideoPrevDelayMs(MacNodeId nodeId) const;
 
         Binder() : lastUpdateUplinkTransmissionInfo_(0.0), lastUplinkTransmission_(0.0)
         {

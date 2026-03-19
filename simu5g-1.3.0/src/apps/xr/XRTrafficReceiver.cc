@@ -251,6 +251,12 @@ namespace simu5g
         {
             double delay = (recvTime.dbl() - genTime) * 1000.0;
             receivedFrames[frameNumber].delay = delay;
+            
+            // Push delay to Binder for real-time feedback to the source
+            if (binder_ != nullptr && macNodeId_ != NODEID_NONE)
+            {
+                binder_->setXRVideoPrevDelayMs(macNodeId_, delay);
+            }
 
             bool onTime = (delay <= deadlineMs);
             receivedFrames[frameNumber].receivedOnTime = onTime;

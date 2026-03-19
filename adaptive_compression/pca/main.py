@@ -22,7 +22,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--video-path", type=Path,
-        default=Path("../data/yt360-videos/billiards.mp4"),
+        default=Path("/home/teaching/Projects/NASCX/data/yt360-videos/billiards.mp4"),
         help="Path to the input video file",
     )
     parser.add_argument(
@@ -42,6 +42,10 @@ def main() -> None:
         "--output-plot", type=Path,
         default=Path("pca_compression_analysis.png"),
         help="Output plot file path",
+    )
+    parser.add_argument(
+        "--max-test-frames", type=int, default=1000,
+        help="Maximum number of test frames to evaluate",
     )
     parser.add_argument(
         "--log-level", type=str, default="INFO",
@@ -98,6 +102,7 @@ def main() -> None:
             encoded_sizes, components_list,
             img_size=args.img_size,
             total_frames=total_frames,
+            max_test_frames=args.max_test_frames,
         )
 
         # 7. Save & plot

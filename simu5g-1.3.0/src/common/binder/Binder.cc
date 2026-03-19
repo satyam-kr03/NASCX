@@ -1424,4 +1424,24 @@ namespace simu5g
         return ids;
     }
 
+    void Binder::setXRVideoPrevDelayMs(MacNodeId nodeId, double prevDelayMs)
+    {
+        Enter_Method_Silent("setXRVideoPrevDelayMs");
+        auto it = xrVideoStats_.find(nodeId);
+        if (it != xrVideoStats_.end())
+        {
+            it->second.prevDelayMs = prevDelayMs;
+        }
+    }
+
+    double Binder::getXRVideoPrevDelayMs(MacNodeId nodeId) const
+    {
+        auto it = xrVideoStats_.find(nodeId);
+        if (it != xrVideoStats_.end())
+        {
+            return it->second.prevDelayMs;
+        }
+        return 10.0; // Default prevDelayMs
+    }
+
 } // namespace simu5g

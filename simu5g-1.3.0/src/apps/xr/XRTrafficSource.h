@@ -59,6 +59,8 @@ namespace simu5g
 
         // Per-frame complexity data (loaded from CSV)
         map<int, double> frameComplexity_;   // frame_number → frame_complexity
+        map<int, double> frameErrorAt80_;    // frame_number → error_at_k80
+        map<int, double> frameErrorRatio_;   // frame_number → error_ratio
         double meanTrafficSize_;              // mean of frame_complexity across all frames
         double stdTrafficSize_;               // std of frame_complexity
 

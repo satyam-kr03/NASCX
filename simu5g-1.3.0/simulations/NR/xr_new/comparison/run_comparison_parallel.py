@@ -114,6 +114,7 @@ def build_sim_cmd(
         "-c", config,
         f"--sim-time-limit={sim_time}s",
         f"--seed-set={seed}",
+        f"--result-dir={run_dir}",
         f"--*.numUe={num_users}",
         f"--*.server.numApps={num_users}",
     ]

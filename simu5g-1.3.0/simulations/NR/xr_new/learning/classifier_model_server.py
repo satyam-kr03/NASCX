@@ -156,9 +156,12 @@ async def predict(req: PredictRequest):
 
     # ── Build input tensors ───────────────────────────────────
     # classifier gives models interleaved [error_at_80, error_ratio, cqi0, fps0, prev_delay0, ...] inputs
-    
-    # We take error_at_80 and error_ratio from the first user (they are shared/global state)
-    raw_state = [req.users[0].error_at_80, req.users[0].error_ratio]
+
+    # Find the real error metrics (OMNeT++ sends 1000.0 / 2.0 as dummies for other users)
+    real_err80 = next((u.error_at_80 for u in req.users if u.error_at_80 != 1000.0), 1000.0)
+    real_errRat = next((u.error_ratio for u in req.users if u.error_ratio != 2.0), 2.0)
+
+    raw_state = [real_err80, real_errRat]
     
     for u in req.users:
         raw_state.append(u.cqi)

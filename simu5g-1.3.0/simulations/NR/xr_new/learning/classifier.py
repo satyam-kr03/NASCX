@@ -102,6 +102,15 @@ def prepare_training_targets(df: pd.DataFrame, num_users: int):
     comp_cols = [f"user{i}_components"     for i in range(num_users)]
     err_cols  = [f"user{i}_effectiveError" for i in range(num_users)]
     df_n["total_error"] = df_n[err_cols].sum(axis=1)
+    df_n["total_components"] = df_n[comp_cols].sum(axis=1)
+
+    # Penalize high component counts under high user load to encourage lower components
+    # when channel capacity is bounded. Scales up for > 5 users.
+    penalty_weight = max(0, (num_users - 5) * 10.0)
+    if num_users >= 8:
+        penalty_weight = (num_users - 5) * 25.0  # Steeper penalty for 8+ users
+
+    df_n["total_cost"] = df_n["total_error"] + (penalty_weight * df_n["total_components"])
 
     for i in range(num_users):
         col = f"prev_user{i}_delay_ms"
@@ -116,15 +125,18 @@ def prepare_training_targets(df: pd.DataFrame, num_users: int):
         state_cols += [f"user{i}_cqi", f"user{i}_frame_rate", f"prev_user{i}_delay_ms"]
         group_cols += [f"user{i}_cqi", f"user{i}_frame_rate", f"prev_user{i}_delay_ms_bin"]
 
-    optimal_idx = df_n.groupby(group_cols)["total_error"].idxmin()
+    optimal_idx = df_n.groupby(group_cols)["total_cost"].idxmin()
     opt         = df_n.loc[optimal_idx].reset_index(drop=True)
 
     X = opt[state_cols].reset_index(drop=True)
     Y = (opt[comp_cols].reset_index(drop=True) / COMP_STEP - COMP_OFFSET).astype(int)
     Y.columns = [f"user{i}" for i in range(num_users)]
 
+    avg_target_components = opt[comp_cols].mean().mean()
+
     print(f"  [{num_users} users] {len(X)} unique states  "
           f"(from {len(df_n):,} total rows)")
+    print(f"  [{num_users} users] Avg target component count: {avg_target_components:.1f}")
     return X, Y
 
 

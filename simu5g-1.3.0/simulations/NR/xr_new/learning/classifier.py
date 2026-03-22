@@ -104,13 +104,21 @@ def prepare_training_targets(df: pd.DataFrame, num_users: int):
     df_n["total_error"] = df_n[err_cols].sum(axis=1)
     df_n["total_components"] = df_n[comp_cols].sum(axis=1)
 
-    # Penalize high component counts under high user load to encourage lower components
-    # when channel capacity is bounded. Scales up for > 5 users.
-    penalty_weight = max(0, (num_users - 5) * 10.0)
-    if num_users >= 8:
-        penalty_weight = (num_users - 5) * 25.0  # Steeper penalty for 8+ users
+    avg_comps_per_user = df_n["total_components"] / num_users
+    
+    # Min-max scale total_error and avg_comps_per_user so they are comparable
+    error_min = df_n["total_error"].min()
+    error_max = df_n["total_error"].max()
+    df_n["total_error_scaled"] = (df_n["total_error"] - error_min) / (error_max - error_min + 1e-8)
 
-    df_n["total_cost"] = df_n["total_error"] + (penalty_weight * df_n["total_components"])
+    comp_min = avg_comps_per_user.min()
+    comp_max = avg_comps_per_user.max()
+    avg_comps_scaled = (avg_comps_per_user - comp_min) / (comp_max - comp_min + 1e-8)
+    
+    # Scale penalty up linearly by user count: 0 at 2 users, 2.0 at 10 users
+    penalty_weight = 0.25 * max(0, num_users - 2)
+    
+    df_n["total_cost"] = df_n["total_error_scaled"] + (penalty_weight * (avg_comps_scaled ** 2))
 
     for i in range(num_users):
         col = f"prev_user{i}_delay_ms"
@@ -119,11 +127,24 @@ def prepare_training_targets(df: pd.DataFrame, num_users: int):
     df_n["error_at_80_bin"] = (df_n["error_at_80"] / 1000).round() * 1000
     df_n["error_ratio_bin"] = (df_n["error_ratio"] / 2.0).round() * 2.0
 
+    # Macro grouping to prevent dimensionality sparsity from locking model at ~40 average components
+    # We round these to group similar macro network scenarios together.
+    df_n["avg_cqi_bin"] = (df_n[[f"user{i}_cqi" for i in range(num_users)]].mean(axis=1) / 2.0).round() * 2.0
+    df_n["avg_fps_bin"] = (df_n[[f"user{i}_frame_rate" for i in range(num_users)]].mean(axis=1) / 10).round() * 10
+    df_n["avg_delay_bin"] = (df_n[[f"prev_user{i}_delay_ms" for i in range(num_users)]].mean(axis=1) / 25).round() * 25
+    
+
     state_cols = ["error_at_80", "error_ratio"]
-    group_cols = ["error_at_80_bin", "error_ratio_bin"]
-    for i in range(num_users):
-        state_cols += [f"user{i}_cqi", f"user{i}_frame_rate", f"prev_user{i}_delay_ms"]
-        group_cols += [f"user{i}_cqi", f"user{i}_frame_rate", f"prev_user{i}_delay_ms_bin"]
+    if num_users > 3:
+        group_cols = ["error_at_80_bin", "error_ratio_bin", "avg_cqi_bin", "avg_fps_bin", "avg_delay_bin"]
+        for i in range(num_users):
+            state_cols += [f"user{i}_cqi", f"user{i}_frame_rate", f"prev_user{i}_delay_ms"]
+    else:
+
+        group_cols = ["error_at_80_bin", "error_ratio_bin"]
+        for i in range(num_users):
+            state_cols += [f"user{i}_cqi", f"user{i}_frame_rate", f"prev_user{i}_delay_ms"]
+            group_cols += [f"user{i}_cqi", f"user{i}_frame_rate", f"prev_user{i}_delay_ms_bin"]
 
     optimal_idx = df_n.groupby(group_cols)["total_cost"].idxmin()
     opt         = df_n.loc[optimal_idx].reset_index(drop=True)

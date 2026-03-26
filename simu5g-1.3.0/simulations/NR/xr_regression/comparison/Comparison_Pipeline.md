@@ -1,0 +1,61 @@
+# Model vs. Static Compression Comparison Pipeline
+
+This document describes the comparative evaluation pipeline executed by `run_comparison_parallel.py`. 
+
+## 1. Overview
+The comparison script validates the effectiveness of the trained machine learning model. It simultaneously simulates the 5G network under numerous configurations to measure if allowing an AI model to dynamically adjust the compression level reduces total network error compared to statically locking all users to any specific compression limit.
+
+The script significantly accelerates this normally time-consuming validation task by spawning the OMNeT++/Simu5G jobs concurrently across available CPU cores via a `ProcessPoolExecutor`.
+
+---
+
+## 2. Methodology & Job Construction
+
+The pipeline compares exactly two paradigms against an identical traffic and user allocation:
+
+### A. Model-Based Adaptive Simulation
+A single simulation is initiated where user applications configure their behavior to `selectionMode="model"`. 
+During this simulation, the traffic sink connects to a local API (`--server-url`, running on port `8000`), relaying live network state metrics (like Channel Quality Indicators and application delays). The server performs inference and dynamically returns the optimal active compression coefficient on a frame-by-frame basis.
+
+### B. Static Level Matrix
+Multiple simulations are queued where user applications have `selectionMode="fixed"`. Each sub-simulation locks the entire network to a specific pre-defined compression level (`--compression-level`) and leaves it immutable regardless of network congestion.
+- For PCA architectures, this sweeps through components: `[5, 10, 15, ..., 80]`.
+- For Autoencoder (AE) architectures, this evaluates limits: `[4, 20, ..., 372]`.
+
+---
+
+## 3. Execution Flow
+
+### 1. Initialization and Assignment
+- Validates the active model API (`/health` route) specifically checking if a model topology matching the current user load is loaded into the server's VRAM.
+- Parses `--num-users`, `--sim-time`, and random seeds to reliably assign specific 360-degree videos and frame rate targets (`FPS_OPTIONS`) to distinct users.
+
+### 2. Parallel Processing Dispatch
+- Generates a simulation run directory structure under `comparison_results_{mode}/`.
+- Queues the `simu5g` commands. A typical test with PCA and 5 users creates 17 distinct parallel jobs (1 adaptive + 16 static limits). 
+- Executes these jobs tracking standard output internally into `sim.log` blocks, dropping failed runs on excessive timeouts (`--timeout = 6000s`).
+
+### 3. Data Parsed & Aggregation
+Once the multiprocessing pool drains, the script combs the individual OMNeT++ directories looking for `user_{i}.csv` files.
+For each user and each strategy logic, it extracts:
+- `user` id and `video` assigned.
+- `strategy` utilized (`model` or `static`).
+- `comp_level` lock setting.
+- Key metrics: `mean_effective_error`, `on_time_ratio`, and `mean_delay_ms`.
+
+---
+
+## 4. Derived Evaluation Reports
+
+The comparison compiles the scraped metrics into two easily verifiable mediums:
+
+### 1. CSV Database
+The comprehensive multi-axis outcomes are exported to `comparison_results_{mode}/comparison.csv`, enabling further graph plotting or deep-dive analysis.
+
+### 2. Standard Output Summary
+The script prints an immediate analytical heuristic:
+- The global **average effective error** computed for the model (dynamically jumping coefficients).
+- A linear breakdown of the average errors sustained when statically locking components identically across the network.
+- Discovery of the exact "Best static" parameter—the single static configuration that fortuitously generated the lowest error. 
+- **Improvement Delta**: The final definitive percentage difference highlighting how much better (or worse) the model performed over the "Best static" parameter case, unequivocally demonstrating the model's adaptive utility.
+

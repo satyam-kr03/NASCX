@@ -5,19 +5,19 @@ This document details the neural network implementation and training pipeline fo
 ## 1. Overview
 The learning module features a PyTorch-based multi-user classifier designed to predict the optimal number of dimensionality reduction components (e.g., PCA/Autoencoder components) to be transmitted per user. 
 
-Instead of a regression task, the problem is formulated as a classification over **16 discrete classes**, mapping directly to the viable transmission configurations: `components ∈ {5, 10, 15, ..., 80}`. The system trains distinct isolated models per concurrent user count (e.g., a specific model just for the 4-user scenario).
+Instead of a regression task, the problem is formulated as a classification over **16 discrete classes**, mapping directly to the viable transmission configurations: `components ∈ {5, 10, 15, ..., 80}`. The system utilizes a **single unified model** capable of handling dynamic admission up to a maximum concurrent user count ($N_{max} = 10$).
 
 ---
 
 ## 2. Neural Network Architecture (`MultiUserCompressionNet`)
 
-The classifier operates on a multi-head architecture, aiming to decouple shared feature extraction from user-specific decision generation:
+The classifier operates on a multi-head architecture, aiming to decouple shared feature extraction from user-specific decision generation, utilizing zero-padding for generic dynamic user loads:
 
-- **Input Features**: The state tensor comprises `(3 * num_users) + 2` interleaved features representing the system and radio environment state:
-  `[error_at_80, error_ratio, cqi_0, fps_0, prev_delay_ms_0, cqi_1, fps_1, prev_delay_ms_1, ...]`
+- **Input Features**: The state tensor comprises `(3 * N_max) + 2` interleaved features representing the system and radio environment state (dynamically padded with zeros for inactive slots):
+  `[error_at_80, error_ratio, cqi_0, fps_0, prev_delay_ms_0, cqi_1, fps_1, prev_delay_ms_1, ..., 0, 0, 0]`
 - **Shared Body Extraction**: Designed to be deliberately lightweight to counteract over-fitting given the dataset bounds.
   - `Linear(input_dim, 32) → ReLU → Dropout(p=0.2) → Linear(32, 16) → ReLU`
-- **Classification Heads**: There is `1` unique linear layer outputting raw logits of size `16` (classes) for *each* of the requested `num_users`.
+- **Classification Heads**: There is `1` unique linear layer outputting raw logits of size `16` (classes) for *each* of the `N_max` possible user slots.
 
 ---
 
@@ -40,9 +40,9 @@ total_cost = total_error_scaled + penalty_weight * (avg_comps_scaled ^ 2)
 Synthetically enhances variation, which significantly limits model memorization of the roughly ~130 unique macroscopic states identified in smaller setups.
 **Implementation**: Inside the `CompressionDataset`, uniform Gaussian noise is layered onto the input states (`augment_std = 0.2`) on consecutive batches.
 
-### D. Ordinal Soft Labels & KL-Divergence
+### D. Ordinal Soft Labels & Masked KL-Divergence
 In standard CrossEntropy loss, predicting 5 components when 10 was the correct target induces equivalent loss to randomly predicting 80; there is no penalty correlation to proximity. 
-**Implementation**: `make_soft_labels()` structures the integer target into a Gaussian probability distribution mapped across adjoining classes (`std=1.5`). The error gradients are then minimized referencing **KL Divergence**, granting the network proportional accuracy credit for selecting compression limits mechanically close to optimal.
+**Implementation**: `make_soft_labels()` structures the integer target into a Gaussian probability distribution mapped across adjoining classes (`std=1.5`). The error gradients are then minimized referencing **KL Divergence**. To scale this dynamically without compromising the shared body limits, the total loss utilizes a **masking strategy**, zeroing-out penalty computations for classification heads predicting inactive padded slots, guaranteeing the shared body exclusively updates based on real user interference structures.
 
 ---
 
@@ -50,11 +50,11 @@ In standard CrossEntropy loss, predicting 5 components when 10 was the correct t
 
 The primary entry point `train_all` controls the flow:
 1. **Pre-processing**: Loads `datasets/pca/dataset.csv`.
-2. **Iteration**: Steps progressively from 2 to 10 users.
-3. **Data Splitting & Scaling**: Generates `.2` splits and fits a `StandardScaler` to uniformize varying input metrics (e.g., raw FPS vs. ms delays).
-4. **Optimization Routine**: Runs `Adam` optimizer (weight decay $10^{-4}$) partnered with a `CosineAnnealingLR` scheduler across 300 epochs.
-5. **Evaluation**: Predicts outcomes on the test loop calculating percentages matching: 
+2. **Data Amalgamation & Padding**: Loops from 2 to 10 users building normalized row instances zero-padded seamlessly to state requirements up to $N_{max} = 10$.
+3. **Data Splitting & Scaling**: Generates combined `.2` splits, utilizing an isolated `StandardScaler` ensuring that generic $(0,0,0)$ padding retains numerical neutrality globally while true states are explicitly standardized.
+4. **Optimization Routine**: Runs `Adam` optimizer (weight decay $10^{-4}$) partnered with a `CosineAnnealingLR` scheduler across 300 epochs factoring dynamic batch divisor scales.
+5. **Evaluation**: Predicts outcomes on active validation states calculating percentages matching: 
    - `Exact match`
    - `Within ±1 Class (±5 components)`
    - `Within ±3 Classes (±15 components)`
-6. **Persistence**: Deploys the optimized weights into `/models/compression_{n}users.pth` alongside its corresponding standardized state `pickle`.
+6. **Persistence**: Deploys the unified state optimized weights into `/models/compression_unified.pth` alongside its corresponding standardized state `pickle`.

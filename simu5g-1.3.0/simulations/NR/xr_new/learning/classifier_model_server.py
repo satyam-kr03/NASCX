@@ -26,7 +26,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 # Import architecture and utilities from classifier script
-from classifier import MultiUserCompressionNet, class_to_components
+from classifier import MultiUserCompressionNet, class_to_components, MAX_USERS
 
 # ── Paths ─────────────────────────────────────────────────────
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -40,8 +40,8 @@ logging.basicConfig(
 log = logging.getLogger("classifier_model_server")
 
 # ── Global state (populated on startup) ───────────────────────
-models: dict[int, MultiUserCompressionNet] = {}
-scalers: dict[int, object] = {}
+model: MultiUserCompressionNet = None
+scaler: object = None
 DEVICE = torch.device("cpu")
 
 
@@ -79,13 +79,13 @@ class PredictResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     device: str
-    loaded_models: list[int]
+    max_users_supported: int
 
 
 # ── Startup / shutdown ────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global models, scalers, DEVICE, MODEL_DIR
+    global model, scaler, DEVICE, MODEL_DIR
 
     MODEL_DIR = os.path.join(SCRIPT_DIR, "models")
     log.info(f"Model dir: {MODEL_DIR}")
@@ -95,33 +95,30 @@ async def lifespan(app: FastAPI):
     DEVICE = torch.device(device_str)
     log.info(f"Using device: {DEVICE}")
 
-    # Load models
-    for n_u in range(2, 11):
-        stem = os.path.join(MODEL_DIR, f"compression_{n_u}users")
-        model_path = stem + ".pth"
-        scaler_path = stem + "_scaler.pkl"
-        
-        if not os.path.exists(model_path) or not os.path.exists(scaler_path):
-            log.warning(f"Model or scaler for {n_u} users not found (tried {stem}.pth). Skipping.")
-            continue
-
-        model = MultiUserCompressionNet(n_u)
+    # Load unified model
+    stem = os.path.join(MODEL_DIR, f"compression_unified")
+    model_path = stem + ".pth"
+    scaler_path = stem + "_scaler.pkl"
+    
+    if not os.path.exists(model_path) or not os.path.exists(scaler_path):
+        log.warning(f"Unified model or scaler not found (tried {model_path}). Skipping.")
+    else:
+        model = MultiUserCompressionNet(MAX_USERS)
         model.load_state_dict(
             torch.load(model_path, map_location=DEVICE, weights_only=True)
         )
         model.to(DEVICE)
         model.eval()
-        models[n_u] = model
         
         with open(scaler_path, "rb") as f:
-            scalers[n_u] = pickle.load(f)
+            scaler = pickle.load(f)
             
-        log.info(f"  Loaded {n_u}-user model and scaler from {MODEL_DIR}")
+        log.info(f"  Loaded unified {MAX_USERS}-user model and scaler from {MODEL_DIR}")
 
-    if not models:
-        log.warning("No models loaded! Make sure to train models via classifier.py first.")
+    if model is None:
+        log.warning("No model loaded! Make sure to train models via classifier.py first.")
     else:
-        log.info(f"✓ All {len(models)} models ready for inference.")
+        log.info(f"✓ Unified model ready for inference.")
     yield
     log.info("Shutting down model server.")
 
@@ -140,7 +137,7 @@ async def health():
     return HealthResponse(
         status="ok",
         device=str(DEVICE),
-        loaded_models=sorted(models.keys()),
+        max_users_supported=MAX_USERS if model is not None else 0,
     )
 
 
@@ -148,45 +145,55 @@ async def health():
 async def predict(req: PredictRequest):
     n_users = len(req.users)
 
-    if n_users not in models:
+    if model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Model not loaded. Server configuration error.",
+        )
+
+    if n_users > MAX_USERS:
         raise HTTPException(
             status_code=400,
-            detail=f"No model for {n_users} users. Supported: {list(models.keys())}.",
+            detail=f"Too many users: {n_users}. Max supported: {MAX_USERS}.",
         )
 
     # ── Build input tensors ───────────────────────────────────
-    # classifier gives models interleaved [error_at_80, error_ratio, cqi0, fps0, prev_delay0, ...] inputs
-
-    # Find the real error metrics (OMNeT++ sends 1000.0 / 2.0 as dummies for other users)
-    real_err80 = next((u.error_at_80 for u in req.users if u.error_at_80 != 1000.0), 1000.0)
-    real_errRat = next((u.error_ratio for u in req.users if u.error_ratio != 2.0), 2.0)
-
-    raw_state = [real_err80, real_errRat]
+    # classifier gives models interleaved [e80_0, er0, cqi0, fps0, prev_delay0, ...] inputs
+    
+    raw_state = []
     
     for u in req.users:
+        raw_state.append(u.error_at_80)
+        raw_state.append(u.error_ratio)
         raw_state.append(u.cqi)
         raw_state.append(u.frame_rate)
         raw_state.append(u.prev_delay_ms)
+        
+    # Pad to max_users
+    for _ in range(n_users, MAX_USERS):
+        raw_state.extend([0.0, 0.0, 0.0, 0.0, 0.0])
     
     arr = np.array(raw_state, dtype=np.float32).reshape(1, -1)
     
-    # Scale
-    scaler = scalers[n_users]
+    # Scale only the active features
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         scaled = scaler.transform(arr)
+        # Re-zero the padded ones - wait, let the scaler scale to the full dimension since we trained a dummy scaler for 32 features.
+        # Check what the dummy scaler was fit on in classifier.py: X_tr (full width to MAX_USERS)
         
     x = torch.tensor(scaled, dtype=torch.float32).to(DEVICE)
 
     # ── Inference ─────────────────────────────────────────────
     t0 = time.perf_counter()
     with torch.no_grad():
-        outputs = models[n_users](x)  # list of (1, NUM_CLASSES) tensors
+        outputs = model(x)  # list of (1, NUM_CLASSES) tensors
     if DEVICE.type == "cuda":
         torch.cuda.synchronize()
     inference_us = (time.perf_counter() - t0) * 1e6
 
     # ── Post-process ──────────────────────────────────────────
+    # Only return predictions for the active n_users
     predictions = []
     for u in range(n_users):
         logits = outputs[u][0] # (NUM_CLASSES,)

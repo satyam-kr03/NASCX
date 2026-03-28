@@ -2,33 +2,6 @@
 Multi-user compression level classifier
 ========================================
 Discrete output: 16 classes → components in {5, 10, 15, ..., 80}
-One model per num_users configuration.
-
-ROOT CAUSE OF POOR ACCURACY (and fixes)
------------------------------------------
-Problem 1 — Contradictory labels when keeping all rows.
-  The dataset is a grid search log: for each (cqi, fps) state, many different
-  k values were evaluated (one per row). Keeping all rows means the same input
-  maps to 16 different labels → the network's best strategy is to predict the
-  most frequent class. Loss plateaus at log(16)*num_users ≈ 8.3, which is
-  exactly what the previous run showed.
-  FIX: Use groupby+idxmin to get one clean label per unique state (the k that
-  minimised total effective error). This is the correct supervised target.
-
-Problem 2 — Too few unique states (131 train samples) for a 16-class problem.
-  FIX: Gaussian input augmentation multiplies each state into many slightly-
-  varied training examples, preventing memorisation and improving generalisation
-  to unseen (cqi, fps) combinations.
-
-Problem 3 — CrossEntropy treats all wrong answers equally (predicting k=5 when
-  the answer is k=10 incurs the same loss as predicting k=80).
-  FIX: Ordinal soft labels — the target distribution is a Gaussian centred on
-  the correct class, so adjacent classes receive partial credit. This aligns the
-  loss with the physical meaning of component counts.
-
-Problem 4 — Model too large for the data (128→256→128 with BatchNorm+Dropout
-  on ~100 samples → overfit/underfit oscillation).
-  FIX: Smaller network sized to the data.
 """
 
 import os
@@ -52,6 +25,8 @@ MAX_USERS    = 10      # Max users network can handle
 NUM_CLASSES  = 16      # classes 0..15 → components 5, 10, ..., 80
 COMP_STEP    = 5
 COMP_OFFSET  = 1       # class = (components / COMP_STEP) - COMP_OFFSET
+FEATURES_PER_USER = 7
+GLOBAL_FEATURES   = 2
 
 # Ordinal soft-label: Gaussian std in class units.
 # std=1.5 means adjacent class (±5 components) gets ~61% weight of correct class.
@@ -139,26 +114,37 @@ def prepare_training_targets(df: pd.DataFrame, num_users: int, max_users: int = 
     if num_users > 3:
         group_cols = ["avg_cqi_bin", "avg_fps_bin", "avg_delay_bin"]
         for i in range(num_users):
-            state_cols += [f"user{i}_error_at_80", f"user{i}_error_ratio", f"user{i}_cqi", f"user{i}_frame_rate", f"prev_user{i}_delay_ms"]
+            state_cols += [f"user{i}_error_at_80", f"user{i}_error_ratio", f"user{i}_cqi", f"user{i}_frame_rate", f"prev_user{i}_delay_ms", f"user{i}_buffer_bytes", f"user{i}_mcs_index"]
             group_cols += [f"user{i}_error_at_80_bin", f"user{i}_error_ratio_bin"]
+        state_cols += ["dl_utilization", "n_active_ues"]
     else:
 
         group_cols = []
         for i in range(num_users):
-            state_cols += [f"user{i}_error_at_80", f"user{i}_error_ratio", f"user{i}_cqi", f"user{i}_frame_rate", f"prev_user{i}_delay_ms"]
+            state_cols += [f"user{i}_error_at_80", f"user{i}_error_ratio", f"user{i}_cqi", f"user{i}_frame_rate", f"prev_user{i}_delay_ms", f"user{i}_buffer_bytes", f"user{i}_mcs_index"]
             group_cols += [f"user{i}_error_at_80_bin", f"user{i}_error_ratio_bin", f"user{i}_cqi", f"user{i}_frame_rate", f"prev_user{i}_delay_ms_bin"]
+        state_cols += ["dl_utilization", "n_active_ues"]
 
-    optimal_idx = df_n.groupby(group_cols)["total_cost"].idxmin()
+
+    # REMOVED GROUPBY - Using best per-frame components directly
+    # To prevent exploding dataset size, we'll subsample if too large but keep frame-level variance
+    # df_n is already sorted by simulation frame sequence.
+    # Group by frameNumber to get the true optimal component per frame instance:
+    optimal_idx = df_n.groupby("frameNumber")["total_cost"].idxmin()
     opt         = df_n.loc[optimal_idx].reset_index(drop=True)
-
-    X_active = opt[state_cols]
+    
     Y_active = (opt[comp_cols] / COMP_STEP - COMP_OFFSET).astype(int)
+    
+    # Simple feature selection for LSTM (no rolling windows applied here yet, we do sequences later or just let the model process step by step)
+    X_active = opt[state_cols]
+
 
     # Pad X and Y to max_users, and build mask M
     n_samples = len(opt)
     X_cols = []
     for i in range(max_users):
-        X_cols += [f"user{i}_error_at_80", f"user{i}_error_ratio", f"user{i}_cqi", f"user{i}_frame_rate", f"prev_user{i}_delay_ms"]
+        X_cols += [f"user{i}_error_at_80", f"user{i}_error_ratio", f"user{i}_cqi", f"user{i}_frame_rate", f"prev_user{i}_delay_ms", f"user{i}_buffer_bytes", f"user{i}_mcs_index"]
+    X_cols += ["dl_utilization", "n_active_ues"]
 
     Y_cols = [f"user{i}" for i in range(max_users)]
 
@@ -172,9 +158,14 @@ def prepare_training_targets(df: pd.DataFrame, num_users: int, max_users: int = 
         X[f"user{i}_cqi"] = X_active[f"user{i}_cqi"]
         X[f"user{i}_frame_rate"] = X_active[f"user{i}_frame_rate"]
         X[f"prev_user{i}_delay_ms"] = X_active[f"prev_user{i}_delay_ms"]
+        X[f"user{i}_buffer_bytes"] = X_active[f"user{i}_buffer_bytes"]
+        X[f"user{i}_mcs_index"] = X_active[f"user{i}_mcs_index"]
         
         Y[f"user{i}"] = Y_active[f"user{i}_components"]
         M[f"user{i}"] = 1.0
+
+    X["dl_utilization"] = X_active["dl_utilization"]
+    X["n_active_ues"] = X_active["n_active_ues"]
 
     avg_target_components = opt[comp_cols].mean().mean()
 
@@ -229,22 +220,22 @@ class MultiUserCompressionNet(nn.Module):
     """
     Shared body + N_max classification heads.
 
-    Input  : (B, 5*max_users) padded interleaved features
+    Input  : (B, 7*max_users + 2) padded interleaved features
     Output : list of max_users tensors, each (B, NUM_CLASSES)
     """
 
     def __init__(self, max_users: int = MAX_USERS, num_classes: int = NUM_CLASSES):
         super().__init__()
         self.max_users = max_users
-        inp = 5 * max_users
+        inp = 7 * max_users + 2
 
         self.body = nn.Sequential(
-            nn.Linear(inp, 32),  nn.ReLU(),
+            nn.Linear(inp, 64),  nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(32, 16),   nn.ReLU(),
+            nn.Linear(64, 32),   nn.ReLU(),
         )
         self.heads = nn.ModuleList([
-            nn.Linear(16, num_classes) for _ in range(max_users)
+            nn.Linear(32, num_classes) for _ in range(max_users)
         ])
 
     def forward(self, x: torch.Tensor):
@@ -403,24 +394,42 @@ def load_model(save_dir: str, device: str = "cpu"):
 def predict_components(
     model:     MultiUserCompressionNet,
     scaler:    StandardScaler,
-    raw_state: list,     # un-scaled [e80_0, er_0, cqi0, fps0, prev_delay0, e80_1, er_1, cqi1, fps1, prev_delay1, ...]
+    raw_state: list,     # un-scaled [e80_0, er_0, cqi0, fps0, prev_delay0, bb0, mcs0, e80_1, er_1, ..., dl_util, n_act]
     num_users: int,
     device:    str = "cpu",
 ) -> list:
     """Returns component counts for each active user given a raw (un-normalised) state."""
     model.eval()
     
-    # Pad input to max_users
-    padded_state = raw_state.copy()
+    # Pad input to max_users.
+    # The global features (dl_utilization, n_active_ues) are at the END.
+    # The input list `raw_state` should be layout:
+    # [u0_f0..6, u1_f0..6, ..., dl_util, n_act] (length: num_users * 7 + 2)
+    per_user_feats = 7
+    globals_list = raw_state[-2:]
+    users_list = raw_state[:-2]
+    
+    padded_users = users_list.copy()
     for _ in range(num_users, model.max_users):
-        padded_state.extend([0.0, 0.0, 0.0, 0.0, 0.0])
+        padded_users.extend([0.0] * per_user_feats)
         
+    padded_state = padded_users + globals_list
     arr    = np.array(padded_state, dtype=np.float32).reshape(1, -1)
     
-    # Note: Only scale the active features, keep padded features 0
+    # Scale active features using the same order the scaler was trained on
+    # i.e., [user0 feats, user1 feats... global feats]
     scaled = np.zeros_like(arr)
-    active_features = scaler.transform(arr[:, :5*num_users])
-    scaled[:, :5*num_users] = active_features
+    # The scaler expects 7*max_users + 2 features. 
+    # To use it correctly on partial data without messing up, we can just transform the padded array 
+    # but zero out the inactive users afterwards.
+    scaled_full = scaler.transform(arr)
+    scaled[0, :] = scaled_full[0, :]
+    
+    # Zero out inactive users
+    for i in range(num_users, model.max_users):
+        start_idx = i * per_user_feats
+        end_idx = start_idx + per_user_feats
+        scaled[0, start_idx:end_idx] = 0.0
     
     x      = torch.tensor(scaled, dtype=torch.float32).to(device)
     with torch.no_grad():

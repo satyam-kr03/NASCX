@@ -8,9 +8,11 @@
 #include "inet/networklayer/common/L3AddressTag_m.h"
 #include "inet/transportlayer/common/L4PortTag_m.h"
 #include "inet/common/lifecycle/NodeStatus.h"
-#include "inet/common/packet/chunk/ByteCountChunk.h"
 #include "apps/xr/XRHeader_m.h"
 #include "common/binder/Binder.h"
+#include "stack/mac/amc/LteAmc.h"
+#include "stack/mac/buffer/LteMacBuffer.h"
+#include "stack/mac/scheduler/LteSchedulerEnb.h"
 
 namespace simu5g
 {
@@ -58,6 +60,7 @@ namespace simu5g
             // Initialize binder pointer to nullptr
             binder_ = nullptr;
             macNodeId_ = NODEID_NONE;
+            gnbMac_ = nullptr;
 
             // Load PCA reconstruction data
             loadPCAData(pcaFile);
@@ -88,15 +91,27 @@ namespace simu5g
                << ":" << destPort << ", macNodeId=" << macNodeId_
                << ", mode=" << selectionMode_ << endl;
 
-            // In model mode, store video stats in Binder so all sources
-            // can gather each other's features for batched model queries
-            if (selectionMode_ == "model" && binder_ != nullptr && macNodeId_ != NODEID_NONE)
-            {
-                binder_->setXRVideoStats(macNodeId_, meanTrafficSize_, stdTrafficSize_, fps);
-                std::cout << "XRTrafficSource: Stored video stats in Binder for UE "
-                          << macNodeId_ << " (mean=" << meanTrafficSize_
-                          << ", std=" << stdTrafficSize_ << ", fps=" << fps << ")" << endl;
+            // Resolve gNB MAC module for buffer/utilization queries
+            try {
+                cModule *serverModule = getParentModule();
+                cModule *networkModule = getSimulation()->getSystemModule();
+                cModule *gnbModule = networkModule->getSubmodule("gnb");
+                if (gnbModule) {
+                    cModule *cellularNic = gnbModule->getSubmodule("cellularNic");
+                    if (cellularNic) {
+                        // Try NR MAC first, then fall back to regular MAC
+                        cModule *macModule = cellularNic->getSubmodule("nrMac");
+                        if (!macModule) macModule = cellularNic->getSubmodule("mac");
+                        if (macModule) {
+                            gnbMac_ = dynamic_cast<LteMacEnb*>(macModule);
+                        }
+                    }
+                }
+            } catch (...) {
+                EV_WARN << "Could not resolve gNB MAC module" << endl;
             }
+            std::cout << "XRTrafficSource: gnbMac_=" << (gnbMac_ ? "resolved" : "null") << endl;
+
         }
     }
 
@@ -115,6 +130,21 @@ namespace simu5g
         {
             error("XRTrafficSource: Could not resolve destination address: %s", destAddressStr.c_str());
             return;
+        }
+
+        if (binder_ != nullptr && destAddress.getType() == inet::L3Address::IPv4)
+        {
+            macNodeId_ = binder_->getMacNodeId(destAddress.toIpv4());
+        }
+
+        // In model mode, store video stats in Binder so all sources
+        // can gather each other's features for batched model queries
+        if (selectionMode_ == "model" && binder_ != nullptr && macNodeId_ != NODEID_NONE)
+        {
+            binder_->setXRVideoStats(macNodeId_, meanTrafficSize_, stdTrafficSize_, fps);
+            std::cout << "XRTrafficSource: Stored video stats in Binder for UE "
+                      << macNodeId_ << " (mean=" << meanTrafficSize_
+                      << ", std=" << stdTrafficSize_ << ", fps=" << fps << ")" << endl;
         }
 
         // Connect to the destination
@@ -308,6 +338,9 @@ namespace simu5g
                 lastFrameUpdated = frameInfo.frame_number;
             }
         }
+
+        // Update gNB-level metrics (buffer, MCS, utilization, active UEs)
+        updateGnbMetrics();
         // Get max payload size from parameter
         int maxPayloadSize = par("maxPayloadSize").intValue();
 
@@ -643,6 +676,46 @@ namespace simu5g
             return (int)frames.size();
     }
 
+    void XRTrafficSource::updateGnbMetrics()
+    {
+        if (binder_ == nullptr || macNodeId_ == NODEID_NONE || gnbMac_ == nullptr)
+            return;
+
+        // 1. Per-UE DL buffer occupancy — sum across all CIDs for this UE's destination
+        unsigned int totalBufferBytes = 0;
+        LteMacBufferMap *macBuffers = gnbMac_->getMacBuffers();
+        if (macBuffers) {
+            for (auto &[cid, buffer] : *macBuffers) {
+                // CID encodes the destination nodeId in the upper bits
+                MacNodeId cidNodeId = MacCidToNodeId(cid);
+                if (cidNodeId == macNodeId_) {
+                    totalBufferBytes += buffer->getQueueOccupancy();
+                }
+            }
+        }
+        binder_->setXRBufferBytes(macNodeId_, totalBufferBytes);
+
+        // 2. Per-UE MCS index from AMC (CQI → iTBS mapping)
+        unsigned int mcsIndex = 0;
+        LteAmc *amc = gnbMac_->getAmc();
+        if (amc) {
+            unsigned int cqi = binder_->getXRCqi(macNodeId_);
+            if (cqi == 0) cqi = (unsigned int)modelDefaultCqi_;
+            if (cqi < 1) cqi = 1;
+            if (cqi > 15) cqi = 15;
+            mcsIndex = amc->getItbsPerCqi((Cqi)cqi, DL);
+        }
+        binder_->setXRMcsIndex(macNodeId_, mcsIndex);
+
+        // 3. DL scheduler utilization [0.0 - 1.0]
+        double util = gnbMac_->getUtilization(DL) / 100.0;  // getUtilization returns percentage
+        binder_->setDlUtilization(util);
+
+        // 4. Active UE count
+        int activeUes = gnbMac_->getActiveUesNumber(DL);
+        binder_->setNActiveUes(activeUes);
+    }
+
     void XRTrafficSource::finish()
     {
         ApplicationBase::finish();
@@ -826,6 +899,9 @@ namespace simu5g
             myErrorRatio = err0It->second;
         }
 
+        // Update Binder with our current true metrics so peers see real data
+        binder_->setXRErrorMetrics(macNodeId_, myErrorAt80, myErrorRatio);
+
         // Build JSON payload: {"users": [{...}, {...}, ...]}
         std::ostringstream json;
         json << "{\"users\":[";
@@ -838,10 +914,9 @@ namespace simu5g
 
             double frate = stats ? stats->frameRate : 60;
 
-            // For frame regression features: use own data if this is our user,
-            // otherwise use a default estimation/mean.
-            double err80  = (uid == macNodeId_) ? myErrorAt80 : 1000.0;
-            double errRat = (uid == macNodeId_) ? myErrorRatio : 2.0;
+            // Use the real metrics for all users, stored in Binder
+            double err80  = stats ? stats->currentErrorAt80 : 1000.0;
+            double errRat = stats ? stats->currentErrorRatio : 2.0;
 
             // Clamp CQI to model range [5, 15]
             if (cqi == 0) cqi = (unsigned int)modelDefaultCqi_;
@@ -853,9 +928,14 @@ namespace simu5g
                  << ",\"error_ratio\":" << errRat
                  << ",\"frame_rate\":" << frate
                  << ",\"cqi\":" << cqi 
-                 << ",\"prev_delay_ms\":" << prevDelayMs << "}";
+                 << ",\"prev_delay_ms\":" << prevDelayMs
+                 << ",\"buffer_bytes\":" << binder_->getXRBufferBytes(uid)
+                 << ",\"mcs_index\":" << binder_->getXRMcsIndex(uid) << "}";
         }
-        json << "]}";
+        json << "],"
+             << "\"dl_utilization\":" << binder_->getDlUtilization()
+             << ",\"n_active_ues\":" << binder_->getNActiveUes()
+             << "}";
 
         // Make HTTP request
         std::string url = modelServerUrl_ + "/predict";

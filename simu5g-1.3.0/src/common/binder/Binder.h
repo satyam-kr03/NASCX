@@ -62,9 +62,13 @@ namespace simu5g
         double stdTrafficSize;
         double frameRate;
         double prevDelayMs;
+        unsigned int bufferBytes;   // DL MAC buffer occupancy for this UE (bytes)
+        unsigned int mcsIndex;      // Current MCS index (derived from CQI via AMC)
+        double currentErrorAt80;
+        double currentErrorRatio;
 
-        XRVideoStats() : meanTrafficSize(0), stdTrafficSize(0), frameRate(60), prevDelayMs(10.0) {}
-        XRVideoStats(double m, double s, double fr) : meanTrafficSize(m), stdTrafficSize(s), frameRate(fr), prevDelayMs(10.0) {}
+        XRVideoStats() : meanTrafficSize(0), stdTrafficSize(0), frameRate(60), prevDelayMs(10.0), bufferBytes(0), mcsIndex(0), currentErrorAt80(1000.0), currentErrorRatio(2.0) {}
+        XRVideoStats(double m, double s, double fr) : meanTrafficSize(m), stdTrafficSize(s), frameRate(fr), prevDelayMs(10.0), bufferBytes(0), mcsIndex(0), currentErrorAt80(1000.0), currentErrorRatio(2.0) {}
     };
 
     class Binder : public cSimpleModule
@@ -78,6 +82,10 @@ namespace simu5g
 
         // maximum age for XR metrics to be considered fresh (in seconds)
         double xrMetricsFreshnessThreshold_;
+
+        // Global gNB-level metrics (updated per-frame by XRTrafficSource)
+        double dlUtilization_ = 0.0;   // DL scheduler utilization [0.0 - 1.0]
+        int nActiveUes_ = 0;           // Number of actively scheduled UEs
 
         // name of the system (top-level) module
         std::string networkName_;
@@ -301,11 +309,33 @@ namespace simu5g
          * Called by XRTrafficReceiver when a frame arrives.
          */
         void setXRVideoPrevDelayMs(MacNodeId nodeId, double prevDelayMs);
+        void setXRErrorMetrics(MacNodeId nodeId, double errorAt80, double errorRatio);
 
         /**
          * Retrieves the previous frame delay for a given UE.
          */
         double getXRVideoPrevDelayMs(MacNodeId nodeId) const;
+
+        /**
+         * Updates per-UE DL MAC buffer occupancy (bytes).
+         */
+        void setXRBufferBytes(MacNodeId nodeId, unsigned int bytes);
+        unsigned int getXRBufferBytes(MacNodeId nodeId) const;
+
+        /**
+         * Updates per-UE MCS index (from AMC).
+         */
+        void setXRMcsIndex(MacNodeId nodeId, unsigned int mcs);
+        unsigned int getXRMcsIndex(MacNodeId nodeId) const;
+
+        /**
+         * Global gNB scheduler metrics — updated by XRTrafficSource.
+         */
+        void setDlUtilization(double util) { dlUtilization_ = util; }
+        double getDlUtilization() const { return dlUtilization_; }
+
+        void setNActiveUes(int n) { nActiveUes_ = n; }
+        int getNActiveUes() const { return nActiveUes_; }
 
         Binder() : lastUpdateUplinkTransmissionInfo_(0.0), lastUplinkTransmission_(0.0)
         {

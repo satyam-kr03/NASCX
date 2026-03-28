@@ -54,6 +54,8 @@ class UserFeatures(BaseModel):
     frame_rate: float      = Field(..., description="Video frame rate in fps (e.g. 45, 60, 72, 90, 120)")
     cqi: int               = Field(..., ge=5, le=15, description="Channel Quality Indicator (5–15)")
     prev_delay_ms: float   = Field(..., description="End to end delay of previous frame")
+    buffer_bytes: int      = Field(..., description="DL MAC buffer occupancy in bytes")
+    mcs_index: int         = Field(..., description="Current MCS index")
 
 
 class PredictRequest(BaseModel):
@@ -61,6 +63,8 @@ class PredictRequest(BaseModel):
         ..., min_length=2, max_length=10,
         description="List of per-user features (2–10 users)",
     )
+    dl_utilization: float = Field(..., description="DL scheduler utilization (0.0-1.0)")
+    n_active_ues: int = Field(..., description="Number of actively scheduled UEs")
 
 
 class UserPrediction(BaseModel):
@@ -158,29 +162,54 @@ async def predict(req: PredictRequest):
         )
 
     # ── Build input tensors ───────────────────────────────────
-    # classifier gives models interleaved [e80_0, er0, cqi0, fps0, prev_delay0, ...] inputs
+    # We will use predict_components from classifier.py since it handles padding and scaling correctly
+    from classifier import predict_components
     
     raw_state = []
-    
     for u in req.users:
         raw_state.append(u.error_at_80)
         raw_state.append(u.error_ratio)
         raw_state.append(u.cqi)
         raw_state.append(u.frame_rate)
         raw_state.append(u.prev_delay_ms)
+        raw_state.append(u.buffer_bytes)
+        raw_state.append(u.mcs_index)
         
-    # Pad to max_users
+    raw_state.append(req.dl_utilization)
+    raw_state.append(req.n_active_ues)
+    
+    t0 = time.perf_counter()
+    components_list = predict_components(model, scaler, raw_state, n_users, str(DEVICE))
+    if DEVICE.type == "cuda":
+        torch.cuda.synchronize()
+    inference_us = (time.perf_counter() - t0) * 1e6
+
+    # ── Post-process ──────────────────────────────────────────
+    # Getting full probabilities is harder with predict_components, so we'll just run inference here
+    # doing similar steps. Let's just inline the scaling/padding logic:
+    
+    per_user_feats = 7
+    globals_list = raw_state[-2:]
+    users_list = raw_state[:-2]
+    
+    padded_users = users_list.copy()
     for _ in range(n_users, MAX_USERS):
-        raw_state.extend([0.0, 0.0, 0.0, 0.0, 0.0])
+        padded_users.extend([0.0] * per_user_feats)
+        
+    padded_state = padded_users + globals_list
+    arr    = np.array(padded_state, dtype=np.float32).reshape(1, -1)
     
-    arr = np.array(raw_state, dtype=np.float32).reshape(1, -1)
-    
-    # Scale only the active features
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        scaled = scaler.transform(arr)
-        # Re-zero the padded ones - wait, let the scaler scale to the full dimension since we trained a dummy scaler for 32 features.
-        # Check what the dummy scaler was fit on in classifier.py: X_tr (full width to MAX_USERS)
+        scaled_full = scaler.transform(arr)
+        
+    scaled = np.zeros_like(arr)
+    scaled[0, :] = scaled_full[0, :]
+    
+    for i in range(n_users, MAX_USERS):
+        start_idx = i * per_user_feats
+        end_idx = start_idx + per_user_feats
+        scaled[0, start_idx:end_idx] = 0.0
         
     x = torch.tensor(scaled, dtype=torch.float32).to(DEVICE)
 

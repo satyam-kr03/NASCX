@@ -87,7 +87,8 @@ namespace simu5g
                 if (resultFile.is_open())
                 {
                     resultFile << "frameNumber,components,mse,sizeBytes,genTime,recvTime,"
-                               << "delay_ms,receivedOnTime,effectiveError,deadline_ms,cqi" << endl;
+                               << "delay_ms,receivedOnTime,effectiveError,deadline_ms,cqi,"
+                               << "buffer_bytes,mcs_index,dl_utilization,n_active_ues" << endl;
                 }
             }
 
@@ -232,6 +233,10 @@ namespace simu5g
             stats.fragmentsReceived = 1;
             stats.totalFragments = totalFragments;
             stats.cqi = 0; // will be set when frame completes
+            stats.buffer_bytes = 0;
+            stats.mcs_index = 0;
+            stats.dl_utilization = 0.0;
+            stats.n_active_ues = 0;
 
             receivedFrames[frameNumber] = stats;
 
@@ -282,13 +287,25 @@ namespace simu5g
 
 
 
+            unsigned int bufBytes = binder_ ? binder_->getXRBufferBytes(macNodeId_) : 0;
+            unsigned int mcsIdx = binder_ ? binder_->getXRMcsIndex(macNodeId_) : 0;
+            double dlUtil = binder_ ? binder_->getDlUtilization() : 0.0;
+            int nActUes = binder_ ? binder_->getNActiveUes() : 0;
+
+            receivedFrames[frameNumber].buffer_bytes = bufBytes;
+            receivedFrames[frameNumber].mcs_index = mcsIdx;
+            receivedFrames[frameNumber].dl_utilization = dlUtil;
+            receivedFrames[frameNumber].n_active_ues = nActUes;
+
             if (resultFile.is_open())
             {
                 resultFile << frameNumber << "," << components << "," << mse << ","
                            << sizeBytes << "," << fixed << setprecision(9) << genTime << ","
                            << recvTime.dbl() << "," << setprecision(6) << delay << ","
                            << (onTime ? 1 : 0) << "," << effectiveError << ","
-                           << deadlineMs << "," << frameCqi << endl;
+                           << deadlineMs << "," << frameCqi << ","
+                           << bufBytes << "," << mcsIdx << ","
+                           << setprecision(3) << dlUtil << "," << nActUes << endl;
             }
 
             std::cout << "Frame " << frameNumber << " COMPLETE: delay=" << delay
@@ -326,6 +343,10 @@ namespace simu5g
                 lostStats.receivedOnTime = false;
                 lostStats.effectiveError = elostValue;
                 lostStats.cqi = 0;
+                lostStats.buffer_bytes = 0;
+                lostStats.mcs_index = 0;
+                lostStats.dl_utilization = 0.0;
+                lostStats.n_active_ues = 0;
 
                 receivedFrames[i] = lostStats;
                 lostCount++;
@@ -333,7 +354,7 @@ namespace simu5g
                 if (resultFile.is_open())
                 {
                     resultFile << i << ",0,0,0,0,0,-1,0," << elostValue << ","
-                               << deadlineMs << ",0" << endl;
+                               << deadlineMs << ",0,0,0,0.0,0" << endl;
                 }
             }
         }

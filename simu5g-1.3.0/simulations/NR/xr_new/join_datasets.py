@@ -26,6 +26,16 @@ df_merged = df_dataset.merge(df_summary_unique, left_on='frameNumber', right_on=
 if 'frame' in df_merged.columns:
     df_merged = df_merged.drop(columns=['frame'])
 
+# Broadcast global errors to per-user columns (max 10 users)
+for i in range(10):
+    if 'error_at_80' in df_merged.columns:
+        df_merged[f'user{i}_error_at_80'] = df_merged['error_at_80']
+    if 'error_ratio' in df_merged.columns:
+        df_merged[f'user{i}_error_ratio'] = df_merged['error_ratio']
+
+# Drop the global columns as they are now per-user
+df_merged = df_merged.drop(columns=['error_at_80', 'error_ratio'], errors='ignore')
+
 # Save the merged dataset
 print(f"Saving merged dataset back to {dataset_path}...")
 df_merged.to_csv(dataset_path, index=False)

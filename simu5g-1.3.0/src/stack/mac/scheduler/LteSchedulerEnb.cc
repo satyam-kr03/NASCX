@@ -976,9 +976,14 @@ void LteSchedulerEnb::resourceBlockStatistics(bool sleep)
 
         // collect the antenna utilization for the current Layer
         utilization_ += (double)(num);
+        antenna++;
     }
 
-    utilization_ /= (((double)(antenna)) * ((double)resourceBlocks_));
+    if (antenna > 0 && resourceBlocks_ > 0) {
+        utilization_ /= (((double)(antenna)) * ((double)resourceBlocks_));
+    } else {
+        utilization_ = 0.0;
+    }
 
     if (direction_ == DL)
         mac_->emit(avgServedBlocksDlSignal_, allocatedBlocks);

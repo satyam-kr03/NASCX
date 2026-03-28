@@ -202,6 +202,15 @@ def collect_run_results(run_info):
             # Per-frame CQI (instantaneous DL CQI at frame reception time)
             row[prefix + "cqi"] = int(frame_row["cqi"]) if "cqi" in frame_row.index else 0
             
+            # New gNB metrics (per user)
+            row[prefix + "buffer_bytes"] = int(frame_row["buffer_bytes"]) if "buffer_bytes" in frame_row.index else 0
+            row[prefix + "mcs_index"] = int(frame_row["mcs_index"]) if "mcs_index" in frame_row.index else 0
+            
+            # Global gNB metrics (same across all users, just read from user 0 to avoid duplication)
+            if i == 0:
+                row["dl_utilization"] = float(frame_row["dl_utilization"]) if "dl_utilization" in frame_row.index else 0.0
+                row["n_active_ues"] = int(frame_row["n_active_ues"]) if "n_active_ues" in frame_row.index else 0
+            
             # Frame rate assigned to this user
             row[prefix + "frame_rate"] = fps_assignments[i]
         
@@ -322,13 +331,13 @@ def main():
     max_users = max(r["num_users"] for r in completed_runs)
     for i in range(max_users):
         for suffix in ["components",
-                        "effectiveError", "delay_ms", "cqi",
+                        "effectiveError", "delay_ms", "cqi", "buffer_bytes", "mcs_index",
                         "frame_rate"]:
             col = f"user{i}_{suffix}"
             if col in dataset.columns:
                 user_cols.append(col)
     
-    col_order = ["frameNumber", "repetition"] + user_cols + ["num_users"]
+    col_order = ["frameNumber", "repetition", "dl_utilization", "n_active_ues"] + user_cols + ["num_users"]
     # Only keep columns that exist
     col_order = [c for c in col_order if c in dataset.columns]
     dataset = dataset[col_order]

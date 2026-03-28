@@ -1427,11 +1427,7 @@ namespace simu5g
     void Binder::setXRVideoPrevDelayMs(MacNodeId nodeId, double prevDelayMs)
     {
         Enter_Method_Silent("setXRVideoPrevDelayMs");
-        auto it = xrVideoStats_.find(nodeId);
-        if (it != xrVideoStats_.end())
-        {
-            it->second.prevDelayMs = prevDelayMs;
-        }
+        xrVideoStats_[nodeId].prevDelayMs = prevDelayMs;
     }
 
     double Binder::getXRVideoPrevDelayMs(MacNodeId nodeId) const
@@ -1444,4 +1440,45 @@ namespace simu5g
         return 10.0; // Default prevDelayMs
     }
 
+    void Binder::setXRBufferBytes(MacNodeId nodeId, unsigned int bytes)
+    {
+        Enter_Method_Silent("setXRBufferBytes");
+        xrVideoStats_[nodeId].bufferBytes = bytes;
+    }
+
+    unsigned int Binder::getXRBufferBytes(MacNodeId nodeId) const
+    {
+        auto it = xrVideoStats_.find(nodeId);
+        if (it != xrVideoStats_.end())
+        {
+            return it->second.bufferBytes;
+        }
+        return 0;
+    }
+
+    void Binder::setXRMcsIndex(MacNodeId nodeId, unsigned int mcs)
+    {
+        Enter_Method_Silent("setXRMcsIndex");
+        xrVideoStats_[nodeId].mcsIndex = mcs;
+    }
+
+    unsigned int Binder::getXRMcsIndex(MacNodeId nodeId) const
+    {
+        auto it = xrVideoStats_.find(nodeId);
+        if (it != xrVideoStats_.end())
+        {
+            return it->second.mcsIndex;
+        }
+        return 0;
+    }
+
 } // namespace simu5g
+namespace simu5g {
+void Binder::setXRErrorMetrics(MacNodeId nodeId, double errorAt80, double errorRatio)
+{
+    if (xrVideoStats_.find(nodeId) != xrVideoStats_.end()) {
+        xrVideoStats_[nodeId].currentErrorAt80 = errorAt80;
+        xrVideoStats_[nodeId].currentErrorRatio = errorRatio;
+    }
+}
+}

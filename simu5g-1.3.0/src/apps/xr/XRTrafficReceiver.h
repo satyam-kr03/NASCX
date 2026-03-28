@@ -34,6 +34,10 @@ namespace simu5g
         int fragmentsReceived;
         int totalFragments;
         unsigned int cqi; // instantaneous DL CQI at frame reception
+        unsigned int buffer_bytes;
+        unsigned int mcs_index;
+        double dl_utilization;
+        int n_active_ues;
     };
 
     class XRTrafficReceiver : public ApplicationBase, public UdpSocket::ICallback

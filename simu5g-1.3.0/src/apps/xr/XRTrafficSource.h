@@ -13,6 +13,7 @@
 #include "inet/networklayer/common/L3Address.h"
 #include "inet/networklayer/common/L3AddressResolver.h"
 #include "stack/mac/LteMacBase.h"
+#include "stack/mac/LteMacEnb.h"
 #include "common/binder/Binder.h"
 
 using namespace omnetpp;
@@ -91,9 +92,13 @@ namespace simu5g
         // Cached MAC Node ID of this UE
         MacNodeId macNodeId_;
 
+        // Cached pointer to gNB MAC module (for buffer/utilization queries)
+        LteMacEnb *gnbMac_;
+
         // Helper methods
         Binder *getBinderModule();
         MacNodeId getMacNodeIdFromModule();
+        void updateGnbMetrics();  // Query gNB for buffer, MCS, utilization, active UEs
         // ===== END ADDITIONS =====
 
     protected:

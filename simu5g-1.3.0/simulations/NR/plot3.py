@@ -68,7 +68,7 @@ def plot_best_cl_on_ax(ax, df: pd.DataFrame, title: str, color: str):
     
     ax.set_xticks(users)
     ax.set_xlabel("Number of Users")
-    ax.set_ylabel("Best Compression Level (K)")
+    ax.set_ylabel("Optimal Compression Level (K)")
     ax.set_title(title)
     
     # CL values are multiples of 5, up to 80
@@ -112,8 +112,8 @@ def main():
         ax.set_xticks(index)
         ax.set_xticklabels(users)
         ax.set_xlabel("Number of Users")
-        ax.set_ylabel("Best Compression Level (K)")
-        ax.set_title("Best Compression Level vs Number of Users")
+        ax.set_ylabel("Optimal Compression Level (K)")
+        ax.set_title("Optimal Compression Level vs Number of Users")
         ax.legend()
         
         ax.yaxis.set_major_locator(mticker.MultipleLocator(10))

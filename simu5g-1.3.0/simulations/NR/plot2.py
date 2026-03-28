@@ -139,7 +139,7 @@ def plot_grouped_bar_on_ax(ax, df: pd.DataFrame, title: str, add_legend: bool = 
 
     n_groups = len(user_counts)
     n_bars = values.shape[1]
-    width = 0.20
+    width = 0.25
     x = np.arange(n_groups) * 1.25
 
     HATCHES = ['//', '\\\\', 'xx', '']
@@ -155,7 +155,7 @@ def plot_grouped_bar_on_ax(ax, df: pd.DataFrame, title: str, add_legend: bool = 
     ax.set_xticks(x)
     ax.set_xticklabels([str(u) for u in user_counts])
     ax.set_xlabel("Number of Users")
-    ax.set_ylabel("Mean Effective Error (μ)")
+    ax.set_ylabel(r"Mean Effective Error ($\bar{\varepsilon}$)")
     ax.set_title(title)
     
     bottom, top = ax.get_ylim()
@@ -178,7 +178,7 @@ def main():
     df_new = load_all(csv_map_new)
     df_small = load_all(csv_map_small)
     
-    fig, axes = plt.subplots(1, 2, figsize=(7.16, 3.2), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(12.0, 4.2), sharey=True)
     
     plot_grouped_bar_on_ax(axes[0], df_small, "Delay Deadline = 3 ms", add_legend=True)
     plot_grouped_bar_on_ax(axes[1], df_new, "Delay Deadline = 5 ms", add_legend=False)

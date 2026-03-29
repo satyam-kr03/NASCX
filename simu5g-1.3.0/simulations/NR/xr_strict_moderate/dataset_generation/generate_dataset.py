@@ -55,6 +55,59 @@ NUM_USERS_SWEEP = list(range(2, 11))  # 2..10 users
 MAX_WORKERS = min(cpu_count(), 32)
 
 
+def load_error_tables(traffic_paths):
+    """Load per-video error tables keyed by (frame, components)."""
+    error_tables = {}
+    for video_name, summary_path in traffic_paths.items():
+        if not Path(summary_path).exists():
+            raise FileNotFoundError(f"Missing summary file for video '{video_name}': {summary_path}")
+
+        df = pd.read_csv(summary_path)
+
+        if "error_at_80" not in df.columns and "error_at_k80" in df.columns:
+            df = df.rename(columns={"error_at_k80": "error_at_80"})
+
+        required_cols = {"frame", "components", "error_at_80", "error_ratio"}
+        missing = required_cols - set(df.columns)
+        if missing:
+            raise ValueError(
+                f"Summary file {summary_path} is missing required columns: {sorted(missing)}"
+            )
+
+        table = {}
+        for _, row in df.iterrows():
+            frame = int(row["frame"])
+            components = int(row["components"])
+            table[(frame, components)] = (float(row["error_at_80"]), float(row["error_ratio"]))
+
+        error_tables[video_name] = table
+
+    return error_tables
+
+
+def lookup_errors(error_tables, video_name, frame_number, components):
+    """Lookup per-frame errors with deterministic frame-base fallback.
+
+    Tries exact (frame, components) first, then (frame-1, components) to
+    handle summary files that use 0-based frame indexing.
+    """
+    if video_name not in error_tables:
+        raise KeyError(f"No error table loaded for video '{video_name}'")
+
+    table = error_tables[video_name]
+    exact_key = (int(frame_number), int(components))
+    shifted_key = (int(frame_number) - 1, int(components))
+
+    if exact_key in table:
+        return table[exact_key]
+    if shifted_key in table:
+        return table[shifted_key]
+
+    raise KeyError(
+        f"Missing error lookup for video='{video_name}', frame={frame_number}, components={components}"
+    )
+
+
 # ─── Step 1: Assign videos to users ─────────────────────────────────────────
 
 def assign_videos(num_users, video_names, seed=42):
@@ -189,7 +242,7 @@ def run_simulation(args):
 
 # ─── Step 3: Collect results from a simulation run ──────────────────────────
 
-def collect_run_results(run_info):
+def collect_run_results(run_info, error_tables):
     """Collect per-frame data from a single simulation run.
     
     Produces rows matching the desired dataset format:
@@ -221,6 +274,7 @@ def collect_run_results(run_info):
     
     # Filter to only actual transmitted frames (not lost/padding rows)
     rows = []
+    skipped_missing_error = 0
     for frame_num in frame_numbers:
         if frame_num < 1 or frame_num > MAX_FRAMES:
             continue
@@ -243,6 +297,23 @@ def collect_run_results(run_info):
             # Per-frame data from simulation
             row[prefix + "components"] = int(frame_row["components"])
             row[prefix + "effectiveError"] = float(frame_row["effectiveError"])
+
+            # Per-user video assignment and compression errors from summary file
+            video_name = video_assignments[i]
+            row[prefix + "video"] = video_name
+            try:
+                err80, err_ratio = lookup_errors(
+                    error_tables,
+                    video_name,
+                    frame_num,
+                    row[prefix + "components"],
+                )
+            except KeyError:
+                skipped_missing_error += 1
+                skip_frame = True
+                break
+            row[prefix + "error_at_80"] = err80
+            row[prefix + "error_ratio"] = err_ratio
             
             # Delay  
             row[prefix + "delay_ms"] = float(frame_row["delay_ms"])
@@ -265,8 +336,13 @@ def collect_run_results(run_info):
         if not skip_frame:
             row["num_users"]   = num_users
             row["repetition"]  = run_info["repetition"]   # ← ADD THIS
-            row[f"user{i}_video"] = video_assignments[i]
             rows.append(row)
+
+    if skipped_missing_error > 0:
+        print(
+            f"  [INFO] Skipped {skipped_missing_error} frame/user entries due to missing error labels "
+            f"(likely holdout frames): n={num_users} r={run_info['repetition']}"
+        )
 
     return rows
 
@@ -311,6 +387,14 @@ def main():
     for pca_path in PCA_FILES:
         video_name = pca_path.stem.replace(FILE_PREFIX, "")
         traffic_paths[video_name] = pca_path
+
+    if not traffic_paths:
+        print(f"[ERROR] No traffic summary files found in {TRAFFIC_DIR} with prefix '{FILE_PREFIX}'")
+        return
+
+    print("\n[0/3] Loading per-video error tables...")
+    error_tables = load_error_tables(traffic_paths)
+    print(f"  Loaded error tables for {len(error_tables)} videos")
 
     if args.dry_run:
         print("\n[DRY RUN] Stopping before simulations.")
@@ -362,7 +446,7 @@ def main():
     
     all_rows = []
     for run_info in completed_runs:
-        rows = collect_run_results(run_info)
+        rows = collect_run_results(run_info, error_tables)
         all_rows.extend(rows)
         print(f"  n={run_info['num_users']} r={run_info['repetition']}: "
               f"{len(rows)} rows")
@@ -379,11 +463,15 @@ def main():
     max_users = max(r["num_users"] for r in completed_runs)
     for i in range(max_users):
         for suffix in ["components",
-                        "effectiveError", "delay_ms", "cqi", "buffer_bytes", "mcs_index",
+                        "effectiveError", "error_at_80", "error_ratio",
+                        "delay_ms", "cqi", "buffer_bytes", "mcs_index",
                         "frame_rate"]:
             col = f"user{i}_{suffix}"
             if col in dataset.columns:
                 user_cols.append(col)
+        video_col = f"user{i}_video"
+        if video_col in dataset.columns:
+            user_cols.append(video_col)
     
     col_order = ["frameNumber", "repetition", "dl_utilization", "n_active_ues"] + user_cols + ["num_users"]
     # Only keep columns that exist

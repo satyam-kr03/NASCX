@@ -1,43 +1,14 @@
-import pandas as pd
+#!/usr/bin/env python3
 
-# Paths to the datasets
-dataset_path = '/home/teaching/Projects/NASCX/simu5g-1.3.0/simulations/NR/xr_new/datasets/pca/dataset.csv'
-summary_path = '/home/teaching/Projects/NASCX/simu5g-1.3.0/simulations/NR/xr_new/compression/traffic_files/pca/pca_sweep_summary_billiards.csv'
+import sys
 
-print(f"Loading {dataset_path}...")
-df_dataset = pd.read_csv(dataset_path)
 
-print(f"Loading {summary_path}...")
-df_summary = pd.read_csv(summary_path)
+def main():
+    print("[DEPRECATED] join_datasets.py is no longer needed.")
+    print("Per-user error columns are now generated directly by dataset_generation/generate_dataset.py.")
+    print("Please regenerate the dataset instead of post-joining summary files.")
+    return 0
 
-# Extract only the unique frame-level errors from the summary
-# Since error_at_k80 and error_ratio are independent of components per frame, we drop duplicates based on frame
-df_summary_unique = df_summary[['frame', 'error_at_k80', 'error_ratio']].drop_duplicates(subset=['frame'])
 
-# Rename columns to match what the classifier expects (error_at_80)
-df_summary_unique = df_summary_unique.rename(columns={'error_at_k80': 'error_at_80'})
-
-print("Merging datasets on frameNumber == frame...")
-# Merge the dataset with the summary where frameNumber matches frame
-# We use a left join to preserve all rows in the dataset
-df_merged = df_dataset.merge(df_summary_unique, left_on='frameNumber', right_on='frame', how='left')
-
-# Drop the redundant 'frame' column if it exists after merge
-if 'frame' in df_merged.columns:
-    df_merged = df_merged.drop(columns=['frame'])
-
-# Broadcast global errors to per-user columns (max 10 users)
-for i in range(10):
-    if 'error_at_80' in df_merged.columns:
-        df_merged[f'user{i}_error_at_80'] = df_merged['error_at_80']
-    if 'error_ratio' in df_merged.columns:
-        df_merged[f'user{i}_error_ratio'] = df_merged['error_ratio']
-
-# Drop the global columns as they are now per-user
-df_merged = df_merged.drop(columns=['error_at_80', 'error_ratio'], errors='ignore')
-
-# Save the merged dataset
-print(f"Saving merged dataset back to {dataset_path}...")
-df_merged.to_csv(dataset_path, index=False)
-
-print("Merge completed successfully! The dataset now contains the additional required columns (error_at_80, error_ratio).")
+if __name__ == "__main__":
+    sys.exit(main())

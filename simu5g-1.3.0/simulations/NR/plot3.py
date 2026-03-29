@@ -79,36 +79,35 @@ def plot_best_cl_on_ax(ax, df: pd.DataFrame, title: str, color: str):
 def main():
     base_dir = Path(__file__).parent.resolve()
     
-    results_new = base_dir / "xr_new/comparison/comparison_results_pca"
-    results_small = base_dir / "xr_small/comparison/comparison_results_pca"
-    results_large = base_dir / "xr_large/comparison/comparison_results_pca"
+    results_60fps = base_dir / "xr_strict_60fps/comparison/comparison_results_pca"
+    results_90fps = base_dir / "xr_strict_90fps/comparison/comparison_results_pca"
+
     
-    csv_map_new = discover_csvs(results_new)
-    csv_map_small = discover_csvs(results_small)
-    csv_map_large = discover_csvs(results_large)
+    csv_map_60fps = discover_csvs(results_60fps)
+    csv_map_90fps = discover_csvs(results_90fps)
     
-    df_new = get_best_cl_by_users(csv_map_new)
-    df_small = get_best_cl_by_users(csv_map_small)
-    df_large = get_best_cl_by_users(csv_map_large)
+    df_60fps = get_best_cl_by_users(csv_map_60fps)
+    df_90fps = get_best_cl_by_users(csv_map_90fps)
     
     fig, ax = plt.subplots(figsize=(6, 4))
     
-    if not df_small.empty and not df_new.empty:
-        users = df_small["num_users"].values
-        # Assume both dataframes have the same users
-        best_cl_small = df_small["best_cl"].values
-        best_cl_new = df_new["best_cl"].values
-        best_cl_large = df_large["best_cl"].values 
-        
-        bar_width = 0.25
-        offset = 0.28
+    if not df_60fps.empty and not df_90fps.empty:
+        # enforce alignment to avoid accidental label swapping
+        merged = pd.merge(df_60fps, df_90fps, on="num_users", how="inner", suffixes=("_60fps", "_90fps"))
+        if merged.empty:
+            ax.text(0.5, 0.5, "No overlapping user counts found", ha='center')
+            return
+
+        users = merged["num_users"].values
+        best_cl_60fps = merged["best_cl_60fps"].values
+        best_cl_90fps = merged["best_cl_90fps"].values
+
+        bar_width = 0.35
         index = np.arange(len(users))
-        
-        ax.bar(index - offset, best_cl_small, bar_width, label="Delay Deadline = 3 ms", color="#D55E00", alpha=0.85, edgecolor='black', linewidth=0.5)
-        ax.bar(index, best_cl_new, bar_width, label="Delay Deadline = 5 ms", color="#2B7BB9", alpha=0.85, edgecolor='black', linewidth=0.5)
-        ax.bar(index + offset, best_cl_large, bar_width, label="Delay Deadline = 10 ms", color="#009E73", alpha=0.85, edgecolor='black', linewidth=0.5)
-        
-        
+
+        ax.bar(index - bar_width/2, best_cl_60fps, bar_width, label="Moderate Load (60fps)", color="#D55E00", alpha=0.85, edgecolor='black', linewidth=0.5)
+        ax.bar(index + bar_width/2, best_cl_90fps, bar_width, label="High Load (90fps)", color="#2B7BB9", alpha=0.85, edgecolor='black', linewidth=0.5)
+
         ax.set_xticks(index)
         ax.set_xticklabels(users)
         ax.set_xlabel("Number of Users")

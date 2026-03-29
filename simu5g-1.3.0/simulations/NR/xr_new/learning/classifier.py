@@ -430,7 +430,13 @@ def predict_components(
         padded_users.extend([0.0] * per_user_feats)
         
     padded_state = padded_users + globals_list
-    arr    = np.array(padded_state, dtype=np.float32).reshape(1, -1)
+    arr = np.array(padded_state, dtype=np.float32).reshape(1, -1)
+
+    if hasattr(scaler, "feature_names_in_"):
+        cols = list(scaler.feature_names_in_)
+        arr_in = pd.DataFrame(arr, columns=cols)
+    else:
+        arr_in = arr
     
     # Scale active features using the same order the scaler was trained on
     # i.e., [user0 feats, user1 feats... global feats]
@@ -438,7 +444,7 @@ def predict_components(
     # The scaler expects 7*max_users + 2 features. 
     # To use it correctly on partial data without messing up, we can just transform the padded array 
     # but zero out the inactive users afterwards.
-    scaled_full = scaler.transform(arr)
+    scaled_full = scaler.transform(arr_in)
     scaled[0, :] = scaled_full[0, :]
     
     # Zero out inactive users

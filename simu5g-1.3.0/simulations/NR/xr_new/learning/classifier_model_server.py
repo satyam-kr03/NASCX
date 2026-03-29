@@ -16,10 +16,10 @@ import logging
 import os
 import pickle
 import time
-import warnings
 from contextlib import asynccontextmanager
 
 import numpy as np
+import pandas as pd
 import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -197,11 +197,15 @@ async def predict(req: PredictRequest):
         padded_users.extend([0.0] * per_user_feats)
         
     padded_state = padded_users + globals_list
-    arr    = np.array(padded_state, dtype=np.float32).reshape(1, -1)
-    
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        scaled_full = scaler.transform(arr)
+    arr = np.array(padded_state, dtype=np.float32).reshape(1, -1)
+
+    if hasattr(scaler, "feature_names_in_"):
+        cols = list(scaler.feature_names_in_)
+        arr_in = pd.DataFrame(arr, columns=cols)
+    else:
+        arr_in = arr
+
+    scaled_full = scaler.transform(arr_in)
         
     scaled = np.zeros_like(arr)
     scaled[0, :] = scaled_full[0, :]

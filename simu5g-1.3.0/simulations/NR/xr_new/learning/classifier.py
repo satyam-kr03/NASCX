@@ -104,15 +104,14 @@ def prepare_training_targets(df: pd.DataFrame, num_users: int, max_users: int = 
     comp_max = avg_comps_per_user.max()
     avg_comps_scaled = (avg_comps_per_user - comp_min) / (comp_max - comp_min + 1e-8)
     
-    # Scale penalty up linearly by user count: 0 at 2 users, 2.0 at 10 users
-    penalty_weight = 0.25 * max(0, num_users - 2)
-    
     # Add our variance_penalty to the total cost
     var_min = df_n["variance_penalty"].min()
     var_max = df_n["variance_penalty"].max()
     df_n["variance_penalty_scaled"] = (df_n["variance_penalty"] - var_min) / (var_max - var_min + 1e-8)
     
-    df_n["total_cost"] = df_n["total_error_scaled"] + (penalty_weight * (avg_comps_scaled ** 2)) + (penalty_weight * df_n["variance_penalty_scaled"])
+    # Remove artificial component penalty (just use tiny weight for tie-breaking)
+    # Give some moderate weight to variance_penalty to maintain fairness
+    df_n["total_cost"] = df_n["total_error_scaled"] + (0.15 * df_n["variance_penalty_scaled"]) + (1e-3 * avg_comps_scaled)
 
     for i in range(num_users):
         col = f"prev_user{i}_delay_ms"

@@ -1,6 +1,6 @@
 user,video,strategy,comp_level,mean_effective_error,on_time_ratio,mean_delay_ms,expected_frames,received_frames,late_frames,lost_frames,delivery_ratio,loss_ratio,missing_only_lost,incomplete_lost,eval_source
-0,billiards,model,adaptive,49.5191,0.991,3.36117,1000,1000,9,0,1.0,0.0,0,0,summary
-1,billiards,model,adaptive,587.82,0.459,12.4923,1000,932,473,68,0.932,0.068,26,42,summary
+0,billiards,model,adaptive,129.28,0.996,2.80753,1000,1000,4,0,1.0,0.0,0,0,summary
+1,billiards,model,adaptive,498.295,0.598,11.4434,1000,989,391,11,0.989,0.011,4,7,summary
 0,billiards,static,5,827.775,0.999,2.27268,1000,1000,1,0,1.0,0.0,0,0,summary
 1,billiards,static,5,863.22,0.81,2.93255,1000,1000,190,0,1.0,0.0,0,0,summary
 0,billiards,static,10,512.107,0.997,2.2811,1000,1000,3,0,1.0,0.0,0,0,summary

@@ -78,8 +78,20 @@ def prepare_training_targets(df: pd.DataFrame, num_users: int, max_users: int = 
 
     comp_cols = [f"user{i}_components"     for i in range(num_users)]
     err_cols  = [f"user{i}_effectiveError" for i in range(num_users)]
-    df_n["total_error"] = df_n[err_cols].sum(axis=1)
+    
+    # Normalize error by frame_rate so high-FPS users aren't starved to save total error mathematically
+    normalized_err_cols = []
+    for i in range(num_users):
+        norm_col = f"user{i}_normError"
+        df_n[norm_col] = df_n[err_cols[i]] / df_n[f"user{i}_frame_rate"].clip(lower=1)
+        normalized_err_cols.append(norm_col)
+        
+    df_n["total_error"] = df_n[normalized_err_cols].sum(axis=1)
     df_n["total_components"] = df_n[comp_cols].sum(axis=1)
+    
+    # Add Variance penalty (Fairness weight) on the components so oracle avoids extreme starvation
+    fairness_weight = 50.0  # arbitrary tunable parameter
+    df_n["variance_penalty"] = df_n[comp_cols].var(axis=1).fillna(0) * fairness_weight
 
     avg_comps_per_user = df_n["total_components"] / num_users
     
@@ -95,7 +107,12 @@ def prepare_training_targets(df: pd.DataFrame, num_users: int, max_users: int = 
     # Scale penalty up linearly by user count: 0 at 2 users, 2.0 at 10 users
     penalty_weight = 0.25 * max(0, num_users - 2)
     
-    df_n["total_cost"] = df_n["total_error_scaled"] + (penalty_weight * (avg_comps_scaled ** 2))
+    # Add our variance_penalty to the total cost
+    var_min = df_n["variance_penalty"].min()
+    var_max = df_n["variance_penalty"].max()
+    df_n["variance_penalty_scaled"] = (df_n["variance_penalty"] - var_min) / (var_max - var_min + 1e-8)
+    
+    df_n["total_cost"] = df_n["total_error_scaled"] + (penalty_weight * (avg_comps_scaled ** 2)) + (penalty_weight * df_n["variance_penalty_scaled"])
 
     for i in range(num_users):
         col = f"prev_user{i}_delay_ms"
@@ -482,38 +499,20 @@ def train_all(
     # The simplest reliable approach is to standard scale ONLY the active data points and leave padding alone.
     
     scaler = StandardScaler()
-    # To scale properly, we create a boolean mask for flattening active data
-    active_mask = []
-    for i, row in M_tr.iterrows():
-        n_active = int(row.sum())
-        active_cols = 2 + 3 * n_active
-        active_mask.append([True] * active_cols + [False] * (X_tr.shape[1] - active_cols))
-        
-    mask_df = pd.DataFrame(active_mask, columns=X_tr.columns, index=X_tr.index)
-    
-    # We will just fit normally for simplicity and manually handle inference scaling.
-    # Actually, the standard formulation works reasonably well if we just let the network learn the scaled padding value.
-    # But retaining 0s is better.
-    
-    X_tr_sc = X_tr.copy()
-    X_te_sc = X_te.copy()
-    
-    for c in X_tr.columns:
-        valid_train = X_tr[c][X_tr[c] != 0.0]
-        if len(valid_train) > 0:
-            mean, std = valid_train.mean(), valid_train.std()
-            if std == 0.0: std = 1.0
+    X_tr_sc = pd.DataFrame(scaler.fit_transform(X_tr), columns=X_tr.columns, index=X_tr.index)
+    X_te_sc = pd.DataFrame(scaler.transform(X_te), columns=X_te.columns, index=X_te.index)
+
+    # Re-apply padding zeros for inactive users (to match server behavior which zeros out inactive user slots)
+    for i in range(MAX_USERS):
+        mask_tr = M_tr[f"user{i}"] == 0.0
+        mask_te = M_te[f"user{i}"] == 0.0
+        for feat in ["error_at_80", "error_ratio", "cqi", "frame_rate", "delay_ms", "buffer_bytes", "mcs_index"]:
+            # 'delay_ms' in the name usually maps to prev_userX_delay_ms
+            col = f"user{i}_{feat}"
+            if feat == "delay_ms": col = f"prev_user{i}_delay_ms"
             
-            # Apply to train and test, but keeping 0s as 0
-            X_tr_sc[c] = X_tr_sc[c].apply(lambda v: (v - mean) / std if v != 0.0 else 0.0)
-            X_te_sc[c] = X_te_sc[c].apply(lambda v: (v - mean) / std if v != 0.0 else 0.0)
-            
-            # We'll save a simpler dict scaler approach
-            
-    # For compatibility, we'll store a standard scaler fitted globally, but note that 
-    # the server should use it correctly
-    dummy_scaler = StandardScaler()
-    dummy_scaler.fit(X_tr)
+            X_tr_sc.loc[mask_tr, col] = 0.0
+            X_te_sc.loc[mask_te, col] = 0.0
 
     model = train_model(
         X_tr_sc, Y_tr, M_tr, max_users=MAX_USERS,
@@ -522,8 +521,7 @@ def train_all(
     )
     evaluate_model(model, X_te_sc, Y_te, M_te, max_users=MAX_USERS, device=device)
     
-    # Save the dummy scaler for now; we'll handle custom inference side in server
-    save_model(model, dummy_scaler, save_dir)
+    save_model(model, scaler, save_dir)
 
 
 # ---------------------------------------------------------------------------

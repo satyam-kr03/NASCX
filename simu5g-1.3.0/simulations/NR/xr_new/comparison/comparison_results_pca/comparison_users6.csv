@@ -1,10 +1,10 @@
 user,video,strategy,comp_level,mean_effective_error,on_time_ratio,mean_delay_ms,expected_frames,received_frames,late_frames,lost_frames,delivery_ratio,loss_ratio,missing_only_lost,incomplete_lost,eval_source
-0,billiards,model,adaptive,153.962,0.996,2.90862,1000,1000,4,0,1.0,0.0,0,0,summary
-1,billiards,model,adaptive,531.587,0.589,13.1958,1000,987,398,13,0.987,0.013,12,1,summary
-2,billiards,model,adaptive,696.957,0.431,9.44247,1000,906,475,94,0.906,0.094,82,12,summary
-3,billiards,model,adaptive,370.086,0.821,6.18118,1000,988,167,12,0.988,0.012,8,4,summary
-4,billiards,model,adaptive,586.588,0.675,5.18189,1000,996,321,4,0.996,0.004,1,3,summary
-5,billiards,model,adaptive,599.577,0.676,6.8699,1000,972,296,28,0.972,0.028,28,0,summary
+0,billiards,model,adaptive,352.79,0.998,2.3217,1000,1000,2,0,1.0,0.0,0,0,summary
+1,billiards,model,adaptive,550.569,0.711,4.39493,1000,998,287,2,0.998,0.002,2,0,summary
+2,billiards,model,adaptive,623.284,0.594,6.05904,1000,979,385,21,0.979,0.021,21,0,summary
+3,billiards,model,adaptive,370.844,0.946,2.54567,1000,1000,54,0,1.0,0.0,0,0,summary
+4,billiards,model,adaptive,578.133,0.661,6.62586,1000,989,328,11,0.989,0.011,11,0,summary
+5,billiards,model,adaptive,618.869,0.609,8.36802,1000,956,347,44,0.956,0.044,44,0,summary
 0,billiards,static,5,827.375,1.0,2.26213,1000,1000,0,0,1.0,0.0,0,0,summary
 1,billiards,static,5,877.693,0.771,3.05905,1000,1000,229,0,1.0,0.0,0,0,summary
 2,billiards,static,5,862.926,0.837,2.86941,1000,1000,163,0,1.0,0.0,0,0,summary

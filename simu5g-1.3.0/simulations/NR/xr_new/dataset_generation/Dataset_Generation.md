@@ -26,6 +26,14 @@ The behavior of the simulations is controlled via a series of variables and comm
 - `--sim-time`: Override the simulated time limit.
 - `--seed`: Base random seed for assigning parameters reproducibly.
 
+### Randomness details
+- `assign_videos` uses `random.Random(seed)` to shuffle video list; the seed is calculated as `--seed + num_users*100 + repetition` so assignments are repeatable.
+- `assign_fps` uses `random.Random(seed+1000)` and randomly samples from `FPS_OPTIONS` for each user.
+- In `run_simulation`, the prescribed frame-level compression schedule uses `random.Random(repetition + num_users*1000)`:
+  - For `repetition < 16`, schedule is static per run (uniform component level `5`, `10`, ..., `80`).
+  - Otherwise, each frame picks a `base_cl` from `5..80` in steps of 5, adds per-user noise `[-10, -5, 0, 5, 10]`, clamps to `[5,80]`, and rounds to step 5.
+- This ensures deterministic outputs for the same `--seed`, `--mode`, `--repetitions`, and `NUM_USERS_SWEEP` configuration.
+
 ---
 
 ## 3. High-Level Workflow
@@ -71,12 +79,23 @@ The final dataset is consolidated and saved into:
 The columns are strictly ordered to offer an AI model accessible ingestion form:
 1. `frameNumber`: Monotonically increasing ID representing the timeframe.
 2. `repetition`: Run repetition seed offset.
-3. Per-User Block (`userX_...` for $X \in [0, N-1]$):
+3. Global simulation-level telemetry:
+   - `dl_utilization`
+   - `n_active_ues`
+4. Per-User Block (`userX_...` for $X \in [0, N-1]$):
    - `userX_components`
    - `userX_effectiveError`
    - `userX_delay_ms`
    - `userX_cqi`
+   - `userX_buffer_bytes`
+   - `userX_mcs_index`
    - `userX_frame_rate`
-4. `num_users`: Useful to identify the overall load (and to prune columns representing users $\geq$ `num_users`).
+   - `userX_video` (assigned video file ID / name)
+5. `num_users`: Useful to identify the overall load (and to prune columns representing users $\geq$ `num_users`).
+
+Additional notes:
+- The dataset only contains frames where all active users have valid results for that frame.
+- Frame range is truncated to `1..1000` by default (from `MAX_FRAMES`).
+- Column ordering follows the script logic in `generate_dataset.py` (sorted by frame, repetition, global metrics, then user metrics).
 
 By aggregating millions of parameters spanning multiple parallel connections simultaneously varying their compression and frame delays, this CSV comprehensively encapsulates a real-world multi-user networking environment for offline training reinforcement learning or heuristic engines.

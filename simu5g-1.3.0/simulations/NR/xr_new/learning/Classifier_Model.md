@@ -13,11 +13,11 @@ Instead of a regression task, the problem is formulated as a classification over
 
 The classifier operates on a multi-head architecture, aiming to decouple shared feature extraction from user-specific decision generation, utilizing zero-padding for generic dynamic user loads:
 
-- **Input Features**: The state tensor comprises `(3 * N_max) + 2` interleaved features representing the system and radio environment state (dynamically padded with zeros for inactive slots):
-  `[error_at_80, error_ratio, cqi_0, fps_0, prev_delay_ms_0, cqi_1, fps_1, prev_delay_ms_1, ..., 0, 0, 0]`
+- **Input Features**: The state tensor comprises `(7 * N_max) + 2` interleaved features representing the system and radio environment state (dynamically padded with zeros for inactive slots):
+  `[user0_error_at_80, user0_error_ratio, user0_cqi, user0_frame_rate, prev_user0_delay_ms, user0_buffer_bytes, user0_mcs_index, user1_error_at_80, ..., dl_utilization, n_active_ues]`
 - **Shared Body Extraction**: Designed to be deliberately lightweight to counteract over-fitting given the dataset bounds.
-  - `Linear(input_dim, 32) → ReLU → Dropout(p=0.2) → Linear(32, 16) → ReLU`
-- **Classification Heads**: There is `1` unique linear layer outputting raw logits of size `16` (classes) for *each* of the `N_max` possible user slots.
+  - `Linear(input_dim=7*N_max+2, 64) → ReLU → Dropout(p=0.2) → Linear(64, 32) → ReLU`
+- **Classification Heads**: `N_max` parallel linear head layers, each outputting raw logits of size `NUM_CLASSES=16` for each user slot.
 
 ---
 
@@ -26,9 +26,12 @@ The classifier operates on a multi-head architecture, aiming to decouple shared 
 During development, initial attempts encountered heavy accuracy stagnation, mostly resulting from predicting the most frequently occurring class. The revised logic in `classifier.py` incorporates four central design changes to effectively conquer this constraint:
 
 ### A. Non-Contradictory Optimal Targets (Label Unification)
-The simulation data intrinsically operates as a grid-search log (where the same state evaluated multiple different compression assignments). Feeding raw rows into supervised learning causes contradictory input-to-label mappings. 
-**Solution**: Grouping variables across macroscopic bins (`avg_cqi_bin`, `avg_fps_bin`, `avg_delay_bin`, etc.) and resolving the target label using an oracle formulation (`idxmin`) of the lowest total resulting network cost for that state.
-
+The simulation data intrinsically operates as a grid-search log (where the same state is evaluated under many different per-user component configurations). Feeding raw rows into supervised learning causes contradictory input-to-label mappings.
+**Solution**: Frame-level optimal target selection is computed via a cost function and then `groupby("frameNumber").idxmin()` to pick the single best row per frame.
+- Cost is: `total_cost = total_error_scaled + (0.15 * variance_penalty_scaled) + (1e-3 * avg_comps_scaled)`
+- `total_error` uses frame-rate-normalized effective errors (`error / fps`) so high-FPS users are not unfairly underweighted.
+- `variance_penalty` encourages fairness instead of extreme starvation of specific users.
+- This produces clean target classes per frame (one class per active user) and supports padded states for $N < N_{max}$.
 ### B. Custom Cost Mechanism 
 The optimization target blends transmission distortion and bandwidth allocation. A cost index is formulated dynamically per `num_users` count:
 ```

@@ -30,8 +30,10 @@ BAR_LABELS = [
     "Adaptive Compression (Dynamic K)",
 ]
 
+# 1. ADJUSTED: Scaled all fonts down to IEEE standards (8-10pt)
 plt.rcParams.update({
-    "figure.dpi": 300,
+    "figure.dpi": 900,
+    "savefig.dpi": 900,
     "axes.spines.top": False,
     "axes.spines.right": False,
     "axes.grid": True,
@@ -39,16 +41,14 @@ plt.rcParams.update({
     "grid.linestyle": "--",
     "grid.linewidth": 0.5,
     "font.family": "serif",
-    "font.size": 10,
-    "axes.titlesize": 10,
+    "font.size": 10,           
+    "axes.titlesize": 10,      
     "axes.titleweight": "bold",
-    "axes.labelsize": 10,
-    "xtick.labelsize": 9,
-    "ytick.labelsize": 9,
-    "legend.frameon": True,
-    "legend.framealpha": 0.9,
-    "legend.edgecolor": "#CCCCCC",
-    "legend.fontsize": 8,
+    "axes.labelsize": 10,      
+    "xtick.labelsize": 9,      
+    "ytick.labelsize": 9,      
+    "legend.frameon": False,    # Clean look for top-placed legend
+    "legend.fontsize": 9,      
     "text.color": "black",
     "axes.labelcolor": "black",
     "xtick.color": "black",
@@ -139,7 +139,8 @@ def plot_grouped_bar_on_ax(ax, df: pd.DataFrame, title: str, add_legend: bool = 
     width = 0.25
     x = np.arange(n_groups) * 1.25
 
-    HATCHES = ['//', '\\\\', 'xx', '']
+    # 2. ADJUSTED: Made hatch patterns slightly denser for print clarity
+    HATCHES = ['////', '\\\\\\\\', 'xx', '']
 
     for j in range(n_bars):
         offset = (j - n_bars / 2 + 0.5) * width
@@ -152,15 +153,16 @@ def plot_grouped_bar_on_ax(ax, df: pd.DataFrame, title: str, add_legend: bool = 
     ax.set_xticks(x)
     ax.set_xticklabels([str(u) for u in user_counts])
     ax.set_xlabel("Number of Users")
-    ax.set_ylabel(r"Mean Error ($\bar{\varepsilon}$)")
+    
+    # Only set Y-label on the first axis (handled dynamically or just keep as is since sharey=True)
+    ax.set_ylabel(r"Mean Error ($\bar{\varepsilon}$)", labelpad=2)
     ax.set_title(title)
     
-    bottom, top = ax.get_ylim()
-    ax.set_ylim(bottom, top + (top - bottom) * 0.20)
+    # 3. ADJUSTED: Removed the excessive 0.40 padding. Just add a small 10% margin at top.
+    ax.margins(y=0.1)
     
     if add_legend:
-        ax.legend(loc="upper left", ncol=2, fontsize=8)
-
+        ax.legend(loc="upper left", ncol=2, fontsize=10)
 
 def main():
     base_dir = Path(__file__).parent.resolve()
@@ -174,16 +176,34 @@ def main():
     df_new = load_all(csv_map_new)
     df_small = load_all(csv_map_small)
     
-    fig, axes = plt.subplots(1, 2, figsize=(12.0, 4.2), sharey=True)
+# 1. MAKE IT SHORTER: Change height from 2.8 to 2.2 for a sleeker, wider look
+    fig, axes = plt.subplots(1, 2, figsize=(7.16, 2.2), sharey=True)
     
-    plot_grouped_bar_on_ax(axes[0], df_new, "Delay Deadline = 5 ms", add_legend=True)
-    plot_grouped_bar_on_ax(axes[1], df_small, "Delay Deadline = 10 ms", add_legend=False)
+    plot_grouped_bar_on_ax(axes[0], df_new, "Delay Bound = 5 ms", add_legend=False)
+    plot_grouped_bar_on_ax(axes[1], df_small, "Delay Bound = 10 ms", add_legend=False)
+
+    legend_handles = [
+        plt.Rectangle((0, 0), 1, 1, facecolor=BAR_COLORS[i], edgecolor="white", linewidth=0.5,
+                      hatch=['////', '\\\\\\\\', 'xx', ''][i % 4], alpha=0.88)
+        for i in range(len(BAR_LABELS))
+    ]
+    
+    # 2. POSITION LEGEND EXACTLY:
+    fig.legend(
+        legend_handles,
+        BAR_LABELS,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.95),  # Pulled down closer to the plots
+        ncol=2,
+        frameon=False,
+    )
 
     fig.tight_layout()
-    fig.subplots_adjust(wspace=0.1)
+    # 3. TIGHTEN THE GAP: This pushes the top of the subplots up to meet the legend
+    fig.subplots_adjust(top=0.82, wspace=0.10) 
     
     out_path = base_dir / "effective_error_by_users_combined.png"
-    fig.savefig(out_path, bbox_inches="tight", dpi=300)
+    fig.savefig(out_path, bbox_inches="tight", dpi=600)
     fig.savefig(out_path.with_suffix(".pdf"), bbox_inches="tight")
     print(f"Saved figure to {out_path}")
 

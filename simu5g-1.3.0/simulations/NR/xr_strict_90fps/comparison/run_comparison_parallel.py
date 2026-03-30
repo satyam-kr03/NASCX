@@ -56,7 +56,7 @@ else:
     COMP_LEVELS = list(range(4, 373, 16))       # 4, 20, 36, ... 372 (AE levels)
 MAX_FRAMES = 1000
 
-FPS_OPTIONS = [90]            # Per-user frame rate choices - Moderate load
+FPS_OPTIONS = [120]            # Per-user frame rate choices - Moderate load
 
 # file prefix for sweep summaries (pca or ae)
 FILE_PREFIX = None

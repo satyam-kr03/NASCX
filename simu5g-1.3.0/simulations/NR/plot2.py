@@ -9,9 +9,8 @@ import pandas as pd
 
 PALETTE = {
     "min_cl":  "#4DAF4A",   # green
-    "mid_cl":  "#FF7F00",   # orange
+    "optimal_cl":  "#FF7F00",   # orange
     "max_cl":  "#984EA3",   # purple
-    "best":    "#2B7BB9",   # steel blue
     "model":   "#E84040",   # vivid red
     "grid":    "#E4E4E4",
     "text":    "#2B2B2B",
@@ -19,16 +18,16 @@ PALETTE = {
 
 BAR_COLORS = [
     PALETTE["min_cl"],
-    PALETTE["mid_cl"],
+    PALETTE["optimal_cl"],
     PALETTE["max_cl"],
     PALETTE["model"],
 ]
 
 BAR_LABELS = [
     "High Compression (K = 5)",
-    "Balanced Compression (K = 40)",
+    "Optimal Static Compression ($K_{\mathrm{opt}}$)",
     "Low Compression (K = 80)",
-    "Network-Aware Compression (Dynamic K)",
+    "Adaptive Compression (Dynamic K)",
 ]
 
 plt.rcParams.update({
@@ -90,27 +89,25 @@ def aggregate_metric(df: pd.DataFrame, metric: str) -> pd.DataFrame:
         static["comp_level"] = static["comp_level"].astype(int)
         levels = sorted(static["comp_level"].unique())
         min_cl, max_cl = levels[0], levels[-1]
-        mid_cl = levels[len(levels) // 2]
 
         cl_means = static.groupby("comp_level")[metric].mean()
         if metric == "on_time_ratio":
-            best_cl = int(cl_means.idxmax())
+            optimal_cl = int(cl_means.idxmax())
         else:
-            best_cl = int(cl_means.idxmin())
+            optimal_cl = int(cl_means.idxmin())
 
         model_val = float(model[metric].mean()) if not model.empty else float("nan")
 
         records.append({
-            "num_users":   n_users,
-            "min_cl":      min_cl,
-            "mid_cl":      mid_cl,
-            "max_cl":      max_cl,
-            "min_cl_val":  float(cl_means.get(min_cl, float("nan"))),
-            "mid_cl_val":  float(cl_means.get(mid_cl, float("nan"))),
-            "max_cl_val":  float(cl_means.get(max_cl, float("nan"))),
-            "best_cl":     best_cl,
-            "best_static": float(cl_means.get(best_cl, float("nan"))),
-            "model_val":   model_val,
+            "num_users":      n_users,
+            "min_cl":         min_cl,
+            "max_cl":         max_cl,
+            "optimal_cl":     optimal_cl,
+            "min_cl_val":     float(cl_means.get(min_cl, float("nan"))),
+            "optimal_cl_val": float(cl_means.get(optimal_cl, float("nan"))),
+            "max_cl_val":     float(cl_means.get(max_cl, float("nan"))),
+            "best_static":    float(cl_means.get(optimal_cl, float("nan"))),
+            "model_val":      model_val,
         })
     if len(records) == 0:
         return pd.DataFrame()
@@ -119,7 +116,7 @@ def aggregate_metric(df: pd.DataFrame, metric: str) -> pd.DataFrame:
 def _build_values(agg: pd.DataFrame) -> np.ndarray:
     return np.column_stack([
         agg["min_cl_val"].values,
-        agg["mid_cl_val"].values,
+        agg["optimal_cl_val"].values,
         agg["max_cl_val"].values,
         agg["model_val"].values,
     ])
@@ -159,18 +156,17 @@ def plot_grouped_bar_on_ax(ax, df: pd.DataFrame, title: str, add_legend: bool = 
     ax.set_title(title)
     
     bottom, top = ax.get_ylim()
-    ax.set_ylim(bottom, top + (top - bottom) * 0.1)
+    ax.set_ylim(bottom, top + (top - bottom) * 0.20)
     
     if add_legend:
-        # We will add a global figure legend instead, but keep this for compatibility if True
-        pass
+        ax.legend(loc="upper left", ncol=2, fontsize=8)
 
 
 def main():
     base_dir = Path(__file__).parent.resolve()
     
-    results_new = base_dir / "xr_new/comparison/comparison_results_pca"
-    results_small = base_dir / "xr_small/comparison/comparison_results_pca"
+    results_new = base_dir / "xr_strict_90fps/comparison/comparison_results_pca"
+    results_small = base_dir / "xr_relaxed_90fps/comparison/comparison_results_pca"
     
     csv_map_new = discover_csvs(results_new)
     csv_map_small = discover_csvs(results_small)
@@ -180,16 +176,11 @@ def main():
     
     fig, axes = plt.subplots(1, 2, figsize=(12.0, 4.2), sharey=True)
     
-    plot_grouped_bar_on_ax(axes[0], df_small, "Delay Deadline = 3 ms", add_legend=True)
-    plot_grouped_bar_on_ax(axes[1], df_new, "Delay Deadline = 5 ms", add_legend=False)
-    
-    # Extract handles and labels for the figure-level legend
-    handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.1), ncol=2, fontsize=9)
-    
+    plot_grouped_bar_on_ax(axes[0], df_new, "Delay Deadline = 5 ms", add_legend=True)
+    plot_grouped_bar_on_ax(axes[1], df_small, "Delay Deadline = 10 ms", add_legend=False)
+
     fig.tight_layout()
-    # Adjust top to make room for legend
-    fig.subplots_adjust(top=0.85, wspace=0.1)
+    fig.subplots_adjust(wspace=0.1)
     
     out_path = base_dir / "effective_error_by_users_combined.png"
     fig.savefig(out_path, bbox_inches="tight", dpi=300)

@@ -79,48 +79,71 @@ def plot_best_cl_on_ax(ax, df: pd.DataFrame, title: str, color: str):
 def main():
     base_dir = Path(__file__).parent.resolve()
     
-    results_60fps = base_dir / "xr_strict_60fps/comparison/comparison_results_pca"
-    results_90fps = base_dir / "xr_strict_90fps/comparison/comparison_results_pca"
+    results = {
+        "strict_60fps": base_dir / "xr_strict_60fps/comparison/comparison_results_pca",
+        "strict_90fps": base_dir / "xr_strict_90fps/comparison/comparison_results_pca",
+        "relaxed_60fps": base_dir / "xr_relaxed_60fps/comparison/comparison_results_pca",
+        "relaxed_90fps": base_dir / "xr_relaxed_90fps/comparison/comparison_results_pca",
+    }
 
-    
-    csv_map_60fps = discover_csvs(results_60fps)
-    csv_map_90fps = discover_csvs(results_90fps)
-    
-    df_60fps = get_best_cl_by_users(csv_map_60fps)
-    df_90fps = get_best_cl_by_users(csv_map_90fps)
-    
-    fig, ax = plt.subplots(figsize=(6, 4))
-    
-    if not df_60fps.empty and not df_90fps.empty:
-        # enforce alignment to avoid accidental label swapping
-        merged = pd.merge(df_60fps, df_90fps, on="num_users", how="inner", suffixes=("_60fps", "_90fps"))
-        if merged.empty:
-            ax.text(0.5, 0.5, "No overlapping user counts found", ha='center')
-            return
+    dfs = {}
+    for key, path in results.items():
+        csv_map = discover_csvs(path)
+        dfs[key] = get_best_cl_by_users(csv_map)
 
-        users = merged["num_users"].values
-        best_cl_60fps = merged["best_cl_60fps"].values
-        best_cl_90fps = merged["best_cl_90fps"].values
+    not_empty = [name for name, df in dfs.items() if not df.empty]
+    if not not_empty:
+        print("No data found in any result directories")
+        return
 
-        bar_width = 0.35
-        index = np.arange(len(users))
+    merged = None
+    for key, df in dfs.items():
+        if df.empty:
+            continue
+        df = df.rename(columns={"best_cl": f"best_cl_{key}"})
+        if merged is None:
+            merged = df
+        else:
+            merged = pd.merge(merged, df, on="num_users", how="outer")
 
-        ax.bar(index - bar_width/2, best_cl_60fps, bar_width, label="Moderate Load (60fps)", color="#D55E00", alpha=0.85, edgecolor='black', linewidth=0.5)
-        ax.bar(index + bar_width/2, best_cl_90fps, bar_width, label="High Load (90fps)", color="#2B7BB9", alpha=0.85, edgecolor='black', linewidth=0.5)
+    if merged is None or merged.empty:
+        print("No overlapping user counts found across datasets")
+        return
 
-        ax.set_xticks(index)
-        ax.set_xticklabels(users)
-        ax.set_xlabel("Number of Users")
-        ax.set_ylabel("Optimal Compression Level (K)")
-        ax.set_title("Optimal Compression Level vs Number of Users")
-        ax.legend()
-        
-        ax.yaxis.set_major_locator(mticker.MultipleLocator(10))
-        ax.yaxis.set_minor_locator(mticker.MultipleLocator(5))
-        ax.set_ylim(0, 85)
-    else:
-        ax.text(0.5, 0.5, "Data not found", ha='center')
-    
+    merged = merged.sort_values("num_users").reset_index(drop=True)
+    users = merged["num_users"].values
+
+    categories = [
+        ("strict_60fps", "d=5 ms, Moderate Load", "#74A9CF", ""),
+        ("strict_90fps", "d=5 ms, High Load", "#045A8D", ""),
+        ("relaxed_60fps", "d=10 ms, Moderate Load", "#FD8D3C", ""),
+        ("relaxed_90fps", "d=10 ms, High Load", "#B10026", ""),
+    ]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    bar_width = 0.2
+    index = np.arange(len(users))
+    offsets = np.linspace(-1.5 * bar_width, 1.5 * bar_width, len(categories))
+
+    for offset, (key, label, color, hatch) in zip(offsets, categories):
+        col = f"best_cl_{key}"
+        if col not in merged.columns:
+            continue
+        y = merged[col].values
+        ax.bar(index + offset, y, bar_width, label=label, color=color, hatch=hatch, alpha=0.9, edgecolor='black', linewidth=0.8)
+
+    ax.set_xticks(index)
+    ax.set_xticklabels(users)
+    ax.set_xlabel("Number of Users")
+    ax.set_ylabel("Optimal Compression Level (K)")
+    ax.set_title("Optimal Compression Level vs Number of Users")
+    ax.legend(fontsize=8)
+
+    ax.yaxis.set_major_locator(mticker.MultipleLocator(10))
+    ax.yaxis.set_minor_locator(mticker.MultipleLocator(5))
+    ax.set_ylim(0, 85)
+
     fig.tight_layout()
     out_path = base_dir / "best_cl_vs_users_combined.png"
     fig.savefig(out_path, bbox_inches="tight", dpi=300)

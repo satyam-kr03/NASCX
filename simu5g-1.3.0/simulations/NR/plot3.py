@@ -114,10 +114,10 @@ def main():
     users = merged["num_users"].values
 
     categories = [
-        ("strict_60fps", "d=5 ms, Moderate Load", "#74A9CF", ""),
-        ("strict_90fps", "d=5 ms, High Load", "#045A8D", ""),
-        ("relaxed_60fps", "d=10 ms, Moderate Load", "#FD8D3C", ""),
-        ("relaxed_90fps", "d=10 ms, High Load", "#B10026", ""),
+        ("strict_60fps", "$d_{\max}$=5 ms, 60 fps", "#74A9CF", ""),
+        ("strict_90fps", "$d_{\max}$=5 ms, 90 fps", "#045A8D", ""),
+        ("relaxed_60fps", "$d_{\max}$=10 ms, 60 fps", "#FD8D3C", ""),
+        ("relaxed_90fps", "$d_{\max}$=10 ms, 90 fps", "#B10026", ""),
     ]
 
     fig, ax = plt.subplots(figsize=(8, 5))

@@ -155,7 +155,7 @@ def plot_grouped_bar_on_ax(ax, df: pd.DataFrame, title: str, add_legend: bool = 
     ax.set_xticks(x)
     ax.set_xticklabels([str(u) for u in user_counts])
     ax.set_xlabel("Number of Users")
-    ax.set_ylabel(r"Mean Effective Error ($\bar{\varepsilon}$)")
+    ax.set_ylabel(r"Mean Error ($\bar{\varepsilon}$)")
     ax.set_title(title)
     
     bottom, top = ax.get_ylim()

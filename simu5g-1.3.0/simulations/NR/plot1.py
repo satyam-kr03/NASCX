@@ -78,14 +78,19 @@ def plot_single(ax, model_df, static_df, label_suffix, color_static, color_model
         label=f"Static ({label_suffix})",
     )
     
-    ax.axhline(m_mean, color=color_model, linewidth=2.0,
-               linestyle="--", label=f"Adaptive ({label_suffix})\n(μ={m_mean:.4f})")
+    ax.axhline(
+        m_mean,
+        color=color_model,
+        linewidth=2.0,
+        linestyle="--",
+        label=f"Adaptive ({label_suffix})\n($\\bar{{\\varepsilon}}={m_mean:.4f}$)",
+    )
 
 def main():
     base_dir = Path(__file__).parent.resolve()
     
-    csv_new = base_dir / "xr_new/comparison/comparison_results_pca/comparison_users5.csv"
-    csv_small = base_dir / "xr_small/comparison/comparison_results_pca/comparison_users5.csv"
+    csv_new = base_dir / "xr_strict_90fps/comparison/comparison_results_pca/comparison_users10.csv"
+    csv_large = base_dir / "xr_relaxed_90fps/comparison/comparison_results_pca/comparison_users10.csv"
     
     fig, ax = plt.subplots(figsize=(6, 4))
     
@@ -93,14 +98,14 @@ def main():
         model_df_new, static_df_new, _ = load(csv_new)
         plot_single(ax, model_df_new, static_df_new, "5 ms", PALETTE["static"], PALETTE["model"], marker="o")
         
-    if csv_small.exists():
-        model_df_small, static_df_small, _ = load(csv_small)
+    if csv_large.exists():
+        model_df_large, static_df_large, _ = load(csv_large)
         # Using a distinct color palette for the 10ms deadline curves so they are distinguishable
-        plot_single(ax, model_df_small, static_df_small, "3 ms", "#009E73", "#D55E00", marker="s")
+        plot_single(ax, model_df_large, static_df_large, "10 ms", "#009E73", "#D55E00", marker="s")
 
     ax.set_xlabel("Components (K)")
-    ax.set_ylabel("Mean Effective Error (μ)")
-    ax.set_title("Effective Error vs Components (5 ms vs 3 ms Deadline)")
+    ax.set_ylabel(r"Mean Error ($\bar{\varepsilon}$)")
+    ax.set_title("Error vs Components (5 ms vs 10 ms Deadline)")
     ax.xaxis.set_major_locator(mticker.MultipleLocator(5))
     
     bottom, top = ax.get_ylim()

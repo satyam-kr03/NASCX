@@ -48,7 +48,6 @@ MAX_FRAMES = 1000      # Only use first 2000 frames per video
 FPS = 60               # Frames per second (default)
 FPS_OPTIONS = [45, 60, 72, 90, 120]  # Per-user frame rate choices
 SIM_TIME_LIMIT = 35    # seconds (>= 2000/60 ≈ 33.33s, with margin)
-DEADLINE_MS = 2.5     # Frame deadline in ms
 NUM_USERS_SWEEP = list(range(2, 11))  # 2..10 users
 
 # Parallelism

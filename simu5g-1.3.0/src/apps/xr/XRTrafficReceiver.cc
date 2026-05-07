@@ -1,5 +1,6 @@
 #include "XRTrafficReceiver.h"
 #include "apps/xr/XRHeader_m.h"
+#include "apps/xr/XRUtils.h"
 #include "inet/common/ModuleAccess.h"
 #include "inet/common/packet/Packet.h"
 #include "inet/common/TimeTag_m.h"
@@ -10,12 +11,16 @@
 #include "stack/phy/LtePhyUe.h"
 #include "common/binder/Binder.h"
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <iomanip>
 #include <numeric>
 #include <sstream>
-#include <unistd.h>
 #include <limits.h>
+
+using std::endl;
+using std::fixed;
+using std::setprecision;
 
 namespace simu5g
 {
@@ -56,6 +61,20 @@ namespace simu5g
             reliabilityThreshold = par("reliabilityThreshold").doubleValue();
             expectedTotalFrames = par("expectedFrames").intValue();
 
+            if (userCount == 0)
+            {
+                totalSumError = 0.0;
+                totalExpectedFrames = 0;
+                totalOnTimeFrames = 0;
+                totalSatisfiedUsers = 0;
+                finishedCount = 0;
+                globalStatsPrinted = false;
+                if (globalResultFile.is_open())
+                {
+                    globalResultFile.close();
+                }
+            }
+
             // Read Elost parameters
             autoElost = par("autoElost").boolValue();
             if (autoElost)
@@ -63,20 +82,20 @@ namespace simu5g
                 std::string pcaFile = par("pcaFile").stdstringValue();
                 int minComponents = par("minComponents").intValue();
                 elostValue = getMaxMSE(pcaFile, minComponents);
-                std::cout << "XRTrafficReceiver: autoElost=true, computed Elost="
-                          << elostValue << " from max MSE at components="
-                          << minComponents << endl;
+                     EV << "XRTrafficReceiver: autoElost=true, computed Elost="
+                         << elostValue << " from max MSE at components="
+                         << minComponents << endl;
             }
             else
             {
                 elostValue = par("elostValue").doubleValue();
-                std::cout << "XRTrafficReceiver: autoElost=false, manual Elost="
-                          << elostValue << endl;
+                     EV << "XRTrafficReceiver: autoElost=false, manual Elost="
+                         << elostValue << endl;
             }
 
             nextExpectedFrame = 1;
             trackingStarted = false;
-            userCount++;
+                userCount++;
 
 
 
@@ -92,30 +111,19 @@ namespace simu5g
                 }
             }
 
-            std::cout << "XRTrafficReceiver: Initialized with deadline=" << deadlineMs
-                      << "ms, expected frames=" << expectedTotalFrames
-                      << ", Elost=" << elostValue << endl;
+            EV << "XRTrafficReceiver: Initialized with deadline=" << deadlineMs
+               << "ms, expected frames=" << expectedTotalFrames
+               << ", Elost=" << elostValue << endl;
         }
         else if (stage == INITSTAGE_APPLICATION_LAYER)
         {
             // Resolve Binder and own MacNodeId for CQI feedback
-            binder_ = dynamic_cast<Binder *>(
-                getSimulation()->getModuleByPath("binder"));
-            if (binder_ == nullptr)
-            {
-                // Fallback: search for Binder type
-                cModule *networkModule = getSimulation()->getSystemModule();
-                for (cModule::SubmoduleIterator it(networkModule); !it.end(); ++it)
-                {
-                    Binder *b = dynamic_cast<Binder *>(*it);
-                    if (b != nullptr) { binder_ = b; break; }
-                }
-            }
+            binder_ = resolveBinderModule(getSimulation());
 
             // Resolve own MacNodeId from this UE's IP address
             if (binder_ != nullptr)
             {
-                cModule *ueModule = getParentModule();
+                omnetpp::cModule *ueModule = getParentModule();
                 inet::L3AddressResolver resolver;
                 inet::L3Address addr = resolver.addressOf(ueModule);
                 if (!addr.isUnspecified() && addr.getType() == inet::L3Address::IPv4)
@@ -124,12 +132,12 @@ namespace simu5g
                 }
             }
 
-            std::cout << "XRTrafficReceiver: Binder=" << (binder_ ? "resolved" : "null")
-                      << ", macNodeId=" << macNodeId_ << endl;
+            EV << "XRTrafficReceiver: Binder=" << (binder_ ? "resolved" : "null")
+               << ", macNodeId=" << macNodeId_ << endl;
         }
     }
 
-    void XRTrafficReceiver::handleStartOperation(LifecycleOperation *operation)
+    void XRTrafficReceiver::handleStartOperation(inet::LifecycleOperation *operation)
     {
         socket.setOutputGate(gate("socketOut"));
         socket.setCallback(this);
@@ -137,11 +145,11 @@ namespace simu5g
 
         // Resolve PHY pointer early so we can query per-frame CQI
         try {
-            cModule *ue = getParentModule();
+            omnetpp::cModule *ue = getParentModule();
             if (ue != nullptr) {
-                cModule *cellularNic = ue->getSubmodule("cellularNic");
+                omnetpp::cModule *cellularNic = ue->getSubmodule("cellularNic");
                 if (cellularNic != nullptr) {
-                    cModule *phyModule = cellularNic->getSubmodule("nrPhy");
+                    omnetpp::cModule *phyModule = cellularNic->getSubmodule("nrPhy");
                     if (phyModule == nullptr) {
                         phyModule = cellularNic->getSubmodule("phy");
                     }
@@ -154,40 +162,39 @@ namespace simu5g
             EV_WARN << "Could not resolve PHY module for per-frame CQI" << endl;
         }
 
-        std::cout << "XRTrafficReceiver: Socket bound to port " << localPort
-                  << ", phyUe_=" << (phyUe_ ? "resolved" : "null") << endl;
+          EV << "XRTrafficReceiver: Socket bound to port " << localPort
+              << ", phyUe_=" << (phyUe_ ? "resolved" : "null") << endl;
     }
 
-    void XRTrafficReceiver::handleStopOperation(LifecycleOperation *operation)
+    void XRTrafficReceiver::handleStopOperation(inet::LifecycleOperation *operation)
     {
         socket.close();
         detectLostFrames();
         computeAndRecordQoE();
     }
 
-    void XRTrafficReceiver::handleCrashOperation(LifecycleOperation *operation)
+    void XRTrafficReceiver::handleCrashOperation(inet::LifecycleOperation *operation)
     {
         if (socket.isOpen())
             socket.destroy();
     }
 
-    void XRTrafficReceiver::handleMessageWhenUp(cMessage *msg)
+    void XRTrafficReceiver::handleMessageWhenUp(omnetpp::cMessage *msg)
     {
         socket.processMessage(msg);
     }
 
-    void XRTrafficReceiver::socketDataArrived(UdpSocket *socket, Packet *packet)
+    void XRTrafficReceiver::socketDataArrived(inet::UdpSocket *socket, inet::Packet *packet)
     {
-        std::cout << "XRTrafficReceiver: Packet arrived from "
-                  << packet->getTag<L3AddressInd>()->getSrcAddress()
-                  << ", name: " << packet->getName() << endl;
-
-        std::cout << "Packet details: " << packet->str() << endl;
+        EV << "XRTrafficReceiver: Packet arrived from "
+           << packet->getTag<inet::L3AddressInd>()->getSrcAddress()
+           << ", name: " << packet->getName() << endl;
+        EV << "Packet details: " << packet->str() << endl;
 
         processFrame(packet);
     }
 
-    void XRTrafficReceiver::processFrame(Packet *packet)
+    void XRTrafficReceiver::processFrame(inet::Packet *packet)
     {
         auto header = packet->popAtFront<XRHeader>();
         if (header == nullptr)
@@ -205,17 +212,17 @@ namespace simu5g
         int fragIndex = header->getFragIndex();
         int totalFragments = header->getTotalFragments();
 
-        std::cout << "Extracted header: Frame=" << frameNumber
-                  << ", Components=" << components
-                  << ", FragIndex=" << fragIndex << "/" << totalFragments << endl;
+          EV << "Extracted header: Frame=" << frameNumber
+              << ", Components=" << components
+              << ", FragIndex=" << fragIndex << "/" << totalFragments << endl;
 
-        simtime_t recvTime = simTime();
+        omnetpp::simtime_t recvTime = omnetpp::simTime();
 
         if (!trackingStarted)
         {
             trackingStarted = true;
             firstFrameTime = recvTime;
-            std::cout << "XRTrafficReceiver: Started tracking at t=" << recvTime << endl;
+            EV << "XRTrafficReceiver: Started tracking at t=" << recvTime << endl;
         }
 
         if (receivedFrames.find(frameNumber) == receivedFrames.end())
@@ -240,16 +247,16 @@ namespace simu5g
 
             receivedFrames[frameNumber] = stats;
 
-            std::cout << "Received first fragment " << fragIndex << "/" << totalFragments
-                      << " of frame " << frameNumber << endl;
+                EV << "Received first fragment " << fragIndex << "/" << totalFragments
+                    << " of frame " << frameNumber << endl;
         }
         else
         {
             receivedFrames[frameNumber].fragmentsReceived++;
 
-            std::cout << "Received fragment " << fragIndex << "/" << totalFragments
-                      << " of frame " << frameNumber << " (total: "
-                      << receivedFrames[frameNumber].fragmentsReceived << ")" << endl;
+                EV << "Received fragment " << fragIndex << "/" << totalFragments
+                    << " of frame " << frameNumber << " (total: "
+                    << receivedFrames[frameNumber].fragmentsReceived << ")" << endl;
         }
 
         if (receivedFrames[frameNumber].fragmentsReceived == totalFragments)
@@ -308,10 +315,10 @@ namespace simu5g
                            << setprecision(3) << dlUtil << "," << nActUes << endl;
             }
 
-            std::cout << "Frame " << frameNumber << " COMPLETE: delay=" << delay
-                      << "ms, onTime=" << onTime << ", MSE=" << mse
-                      << ", error=" << effectiveError
-                      << ", cqi=" << frameCqi << endl;
+                EV << "Frame " << frameNumber << " COMPLETE: delay=" << delay
+                    << "ms, onTime=" << onTime << ", MSE=" << mse
+                    << ", error=" << effectiveError
+                    << ", cqi=" << frameCqi << endl;
 
             // Push CQI to Binder for real-time feedback to the source
             if (binder_ != nullptr && macNodeId_ != NODEID_NONE)
@@ -325,30 +332,14 @@ namespace simu5g
 
     void XRTrafficReceiver::detectLostFrames()
     {
-        std::cout << "XRTrafficReceiver: Detecting lost frames..." << endl;
+        EV << "XRTrafficReceiver: Detecting lost frames..." << endl;
 
         int lostCount = 0;
         for (int i = 1; i <= expectedTotalFrames; i++)
         {
             if (receivedFrames.find(i) == receivedFrames.end())
             {
-                ReceivedFrameStats lostStats;
-                lostStats.frameNumber = i;
-                lostStats.pcaComponents = 0;
-                lostStats.mse = 0;
-                lostStats.sizeBytes = 0;
-                lostStats.genTime = 0;
-                lostStats.recvTime = 0;
-                lostStats.delay = -1;
-                lostStats.receivedOnTime = false;
-                lostStats.effectiveError = elostValue;
-                lostStats.cqi = 0;
-                lostStats.buffer_bytes = 0;
-                lostStats.mcs_index = 0;
-                lostStats.dl_utilization = 0.0;
-                lostStats.n_active_ues = 0;
-
-                receivedFrames[i] = lostStats;
+                receivedFrames[i] = ReceivedFrameStats::createLost(i, elostValue);
                 lostCount++;
 
                 if (resultFile.is_open())
@@ -359,7 +350,7 @@ namespace simu5g
             }
         }
 
-        std::cout << "Total lost frames: " << lostCount << " out of " << expectedTotalFrames << endl;
+        EV << "Total lost frames: " << lostCount << " out of " << expectedTotalFrames << endl;
     }
 
     void XRTrafficReceiver::computeAndRecordQoE()
@@ -379,8 +370,8 @@ namespace simu5g
         double sumError = 0.0;
         double sumDelay = 0.0;
 
-        vector<double> allErrors;
-        vector<double> delays;
+        std::vector<double> allErrors;
+        std::vector<double> delays;
 
         for (int i = 1; i <= expectedTotalFrames; i++)
         {
@@ -471,12 +462,6 @@ namespace simu5g
             }
         }
         
-        // recordScalar calls removed as requested
-        /*
-        recordScalar("totalFrames", totalFrames);
-        recordScalar("receivedFrames", receivedCount);
-        ...
-        */
     }
 
     void XRTrafficReceiver::finish()
@@ -497,6 +482,8 @@ namespace simu5g
             resultFile.close();
         }
 
+        finishedCount++;
+
         // Global stats aggregation
         if (finishedCount == userCount && !globalStatsPrinted)
         {
@@ -512,43 +499,30 @@ namespace simu5g
                 globalResultFile.close();
             }
 
-            // Optional: Print global stats to stdout if desired, otherwise comment out
-            /*
-            std::cout << "\n========== Global XR Traffic QoE Summary ==========" << endl;
-            ...
-            */
             globalStatsPrinted = true;
         }
     }
 
-    void XRTrafficReceiver::socketErrorArrived(UdpSocket *socket, Indication *indication)
+    void XRTrafficReceiver::socketErrorArrived(inet::UdpSocket *socket, inet::Indication *indication)
     {
         EV_WARN << "Socket error occurred" << endl;
         delete indication;
     }
 
-    void XRTrafficReceiver::socketClosed(UdpSocket *socket)
+    void XRTrafficReceiver::socketClosed(inet::UdpSocket *socket)
     {
-        std::cout << "Socket closed" << endl;
+        EV << "Socket closed" << endl;
     }
 
     double XRTrafficReceiver::getMaxMSE(const std::string &pcaFile, int minComponents)
     {
-        // Get absolute path for debugging
-        char cwd[PATH_MAX];
-        if (getcwd(cwd, sizeof(cwd)) != NULL) {
-            std::cout << "XRTrafficReceiver: Current working directory: " << cwd << endl;
-        } else {
-            EV_WARN << "XRTrafficReceiver: getcwd() error" << endl;
-        }
-
         if (pcaFile.empty())
         {
             EV_WARN << "No pcaFile specified for autoElost, using default 1000.0" << endl;
             return 1000.0;
         }
 
-        std::cout << "XRTrafficReceiver: Opening PCA file: " << pcaFile << endl;
+        EV << "XRTrafficReceiver: Opening PCA file: " << pcaFile << endl;
         std::ifstream f(pcaFile);
         if (!f.is_open())
         {
@@ -560,7 +534,7 @@ namespace simu5g
         std::string line;
         // Skip header
         if (std::getline(f, line)) {
-             std::cout << "XRTrafficReceiver: Header line: " << line << endl;
+             EV << "XRTrafficReceiver: Header line: " << line << endl;
         } else {
              EV_WARN << "XRTrafficReceiver: Empty PCA file!" << endl;
              f.close();
@@ -630,19 +604,19 @@ namespace simu5g
         // If exact minComponents found, use it
         if (count > 0)
         {
-            std::cout << "XRTrafficReceiver::getMaxMSE: Found " << count
-                      << " rows at components=" << minComponents
-                      << ", maxMSE=" << maxMSE << endl;
+                EV << "XRTrafficReceiver::getMaxMSE: Found " << count
+                    << " rows at components=" << minComponents
+                    << ", maxMSE=" << maxMSE << endl;
             return maxMSE;
         }
 
         // Fallback: use the smallest non-zero component level found in file
         if (countSmallest > 0)
         {
-            std::cout << "XRTrafficReceiver::getMaxMSE: minComponents=" << minComponents
-                      << " not found. Falling back to smallest level components="
-                      << smallestNonZero << " (" << countSmallest
-                      << " rows, maxMSE=" << maxMSESmallest << ")" << endl;
+                EV << "XRTrafficReceiver::getMaxMSE: minComponents=" << minComponents
+                    << " not found. Falling back to smallest level components="
+                    << smallestNonZero << " (" << countSmallest
+                    << " rows, maxMSE=" << maxMSESmallest << ")" << endl;
             return maxMSESmallest;
         }
 

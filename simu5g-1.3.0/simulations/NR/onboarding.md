@@ -1,0 +1,25 @@
+Here is a technical summary of the paper tailored to help a developer onboard to the codebase:
+
+## Core Concept
+* [cite_start]The project implements a network-aware semantic compression framework designed for Extended Reality (XR) traffic over 6G networks[cite: 10].
+* [cite_start]It addresses the fundamental trade-off between compression-induced distortion and delay violations caused by network congestion[cite: 6, 7, 8, 38].
+* [cite_start]The system dynamically adjusts the compression level per user in real-time by selecting the optimal number of Principal Component Analysis (PCA) components ($K$) to transmit[cite: 10, 82].
+
+## System Architecture & Data Flow
+* [cite_start]**Input & Preprocessing:** Downlink XR frames arrive at the gNodeB (gNB)[cite: 55]. [cite_start]Each frame is resized, normalized to $[0, 1]$, and flattened into a feature vector[cite: 89].
+* [cite_start]**Compression Strategy:** The framework applies PCA, projecting the frame onto a subspace of top-$K$ eigenvectors[cite: 90]. [cite_start]The number of retained components ($K$) acts as the compression control parameter, which is evaluated over a discrete subset of values ranging from 5 to 80[cite: 92, 99].
+* [cite_start]**Semantic Scoring:** The system calculates a semantic score ($s_i$) for each component[cite: 96, 100]. [cite_start]This score represents the incremental reduction in Root Mean Square Error (RMSE) achieved by including the $K^{th}$ component compared to the first $(K-1)$ components[cite: 41, 78, 79]. 
+* [cite_start]**Buffering:** Incoming frames are buffered at the gNB alongside their calculated semantic score profiles[cite: 80].
+* [cite_start]**Transmission Decision:** A neural network at the gNB determines the optimal $K$ for each User Equipment (UE) based on real-time network states and semantic importance[cite: 39, 82]. [cite_start]The chosen $K$ components are then transmitted as a UDP payload[cite: 68, 83].
+* [cite_start]**Reconstruction:** The receiving UE reconstructs the original frame via an inverse projection using the received $K$ components[cite: 84, 91].
+
+## Neural Network Implementation Details
+* [cite_start]**Input Features:** The classifier ingests a 212-dimensional joint state vector representing both global network conditions and per-user metrics[cite: 126, 127, 129]. [cite_start]Global features capture cell-level interference through downlink utilization and active user count[cite: 118]. [cite_start]Per-user features include instantaneous Channel Quality Indicator (CQI), frame rate, previous frame transmission delay, buffer occupancy, Modulation and Coding Scheme (MCS) index, and the 16-dimensional semantic score profile[cite: 119, 128].
+* [cite_start]**Architecture:** The model features a shared feature extraction backbone consisting of Linear layers, ReLU activations, and Dropout[cite: 130, 132]. [cite_start]This shared backbone feeds into $N_{max}$ independent classification heads (where $N_{max} = 10$) that output raw logits across the 16 possible compression classes for each user slot[cite: 125, 132].
+* [cite_start]**Handling Inactive Users:** Inactive user slots are zero-padded at the input, and their respective classification heads are masked during training and ignored during inference[cite: 125, 134, 135].
+* [cite_start]**Loss Function & Training:** The training objective minimizes the Kullback-Leibler (KL) divergence between the model's predicted softmax distribution and a Gaussian soft label target[cite: 147, 148, 151]. [cite_start]The cost function explicitly penalizes solutions that cause delay deadline violations[cite: 142]. [cite_start]It also promotes fairness in resource allocation by penalizing high variance in $K$ assignments across the active users[cite: 143]. [cite_start]If a frame exceeds its maximum delay bound ($d_{max}$), the system applies a worst-case penalty by calculating the error using the maximum compression level ($K = 5$)[cite: 111, 114, 116].
+
+## Simulation & Testing Environment
+* [cite_start]**Platform:** The system is implemented and evaluated using Simu5G, a system-level simulator for 5G networks based on the OMNeT++ platform[cite: 172].
+* [cite_start]**Topology & Scheduling:** It utilizes a 5G New Radio (NR) Standalone architecture with a MAX-CQI downlink scheduler[cite: 153, 159, 173].
+* [cite_start]**Packet Construction:** Logical frames are fragmented into UDP packets prior to transmission[cite: 161]. [cite_start]For the networking stack, it is crucial to note that every fragment carries a common header denoting the frame sequence number, compression level, theoretical reconstruction error, and generation timestamp[cite: 161]. [cite_start]A frame is only considered successfully received if all of its constituent fragments are reassembled; partial arrivals are treated as full frame losses[cite: 162, 163].

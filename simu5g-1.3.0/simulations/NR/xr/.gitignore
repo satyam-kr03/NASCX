@@ -1,0 +1,23 @@
+# ── Generated artifacts ─────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# ── Simulation outputs ─────────────────────────────────────────────────
+results/
+dataset_generation/results/
+comparison/comparison_results*/
+
+# ── Generated datasets (large files) ───────────────────────────────────
+datasets/pca/dataset.csv
+datasets/ae/
+
+# ── Trained models ─────────────────────────────────────────────────────
+learning/models/
+
+# ── Logs ───────────────────────────────────────────────────────────────
+*.log
+
+# ── Stale test outputs ─────────────────────────────────────────────────
+test_res.csv*

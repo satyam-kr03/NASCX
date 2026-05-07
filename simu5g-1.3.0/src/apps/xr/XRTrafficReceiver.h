@@ -2,20 +2,17 @@
 #define __SIMU5G_XRTRAFFICRECEIVER_H_
 
 #include <omnetpp.h>
+#include <iosfwd>
 #include <map>
+#include <string>
 #include <vector>
 #include "inet/applications/base/ApplicationBase.h"
 #include "inet/transportlayer/contract/udp/UdpSocket.h"
 #include "inet/networklayer/common/L3Address.h"
 #include "common/binder/Binder.h"
-#include <fstream>
 
 // Forward declaration for PHY access
 namespace simu5g { class LtePhyUe; }
-
-using namespace omnetpp;
-using namespace std;
-using namespace inet;
 
 namespace simu5g
 {
@@ -26,8 +23,8 @@ namespace simu5g
         int pcaComponents;
         double mse;
         int sizeBytes;
-        simtime_t genTime;
-        simtime_t recvTime;
+        omnetpp::simtime_t genTime;
+        omnetpp::simtime_t recvTime;
         double delay; // in seconds
         bool receivedOnTime;
         double effectiveError; // MSE if on time, Elost if late
@@ -38,13 +35,35 @@ namespace simu5g
         unsigned int mcs_index;
         double dl_utilization;
         int n_active_ues;
+
+        static ReceivedFrameStats createLost(int frameNum, double elost)
+        {
+            ReceivedFrameStats stats;
+            stats.frameNumber = frameNum;
+            stats.pcaComponents = 0;
+            stats.mse = 0.0;
+            stats.sizeBytes = 0;
+            stats.genTime = 0;
+            stats.recvTime = 0;
+            stats.delay = -1;
+            stats.receivedOnTime = false;
+            stats.effectiveError = elost;
+            stats.fragmentsReceived = 0;
+            stats.totalFragments = 0;
+            stats.cqi = 0;
+            stats.buffer_bytes = 0;
+            stats.mcs_index = 0;
+            stats.dl_utilization = 0.0;
+            stats.n_active_ues = 0;
+            return stats;
+        }
     };
 
     class XRTrafficReceiver : public ApplicationBase, public UdpSocket::ICallback
     {
     private:
         // Network parameters
-        UdpSocket socket;
+        inet::UdpSocket socket;
         int localPort;
 
         // QoE parameters
@@ -54,18 +73,18 @@ namespace simu5g
         bool autoElost;    // Automatically set Elost to max MSE
 
         // Frame tracking
-        map<int, ReceivedFrameStats> receivedFrames;
+        std::map<int, ReceivedFrameStats> receivedFrames;
         int expectedTotalFrames;
         int nextExpectedFrame;
         bool trackingStarted;
-        simtime_t firstFrameTime;
+        omnetpp::simtime_t firstFrameTime;
 
         // Flag to prevent double computation
         bool qoeComputed;
 
         // Result file
-        ofstream resultFile;
-        string resultFilename;
+        std::ofstream resultFile;
+        std::string resultFilename;
 
         // Static variables for global statistics
         static double totalSumError;
@@ -88,21 +107,21 @@ namespace simu5g
     protected:
         virtual void initialize(int stage) override;
         virtual int numInitStages() const override { return NUM_INIT_STAGES; }
-        virtual void handleMessageWhenUp(cMessage *msg) override;
+        virtual void handleMessageWhenUp(omnetpp::cMessage *msg) override;
         virtual void finish() override;
 
         // Application lifecycle
-        virtual void handleStartOperation(LifecycleOperation *operation) override;
-        virtual void handleStopOperation(LifecycleOperation *operation) override;
-        virtual void handleCrashOperation(LifecycleOperation *operation) override;
+        virtual void handleStartOperation(inet::LifecycleOperation *operation) override;
+        virtual void handleStopOperation(inet::LifecycleOperation *operation) override;
+        virtual void handleCrashOperation(inet::LifecycleOperation *operation) override;
 
         // UdpSocket::ICallback interface
-        virtual void socketDataArrived(UdpSocket *socket, Packet *packet) override;
-        virtual void socketErrorArrived(UdpSocket *socket, Indication *indication) override;
-        virtual void socketClosed(UdpSocket *socket) override;
+        virtual void socketDataArrived(inet::UdpSocket *socket, inet::Packet *packet) override;
+        virtual void socketErrorArrived(inet::UdpSocket *socket, inet::Indication *indication) override;
+        virtual void socketClosed(inet::UdpSocket *socket) override;
 
         // Helper methods
-        void processFrame(Packet *packet);
+        void processFrame(inet::Packet *packet);
         void detectLostFrames();
         void computeAndRecordQoE();
         double getMaxMSE(const std::string &pcaFile, int minComponents);

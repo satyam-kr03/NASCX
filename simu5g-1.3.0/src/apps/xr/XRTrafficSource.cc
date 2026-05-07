@@ -1,7 +1,9 @@
 #include "XRTrafficSource.h"
+#include "apps/xr/XRUtils.h"
 #include <set>
 #include <cmath>
 #include <cstdio>
+#include <cctype>
 #include "inet/common/ModuleAccess.h"
 #include "inet/common/packet/Packet.h"
 #include "inet/common/TimeTag_m.h"
@@ -13,6 +15,74 @@
 #include "stack/mac/amc/LteAmc.h"
 #include "stack/mac/buffer/LteMacBuffer.h"
 #include "stack/mac/scheduler/LteSchedulerEnb.h"
+#include <regex>
+#include <unistd.h>
+
+using std::endl;
+
+namespace {
+
+class TempFile
+{
+public:
+    explicit TempFile(const std::string &prefix)
+    {
+        std::string templ = "/tmp/" + prefix + "_XXXXXX";
+        std::vector<char> pathBuf(templ.begin(), templ.end());
+        pathBuf.push_back('\0');
+        int fd = mkstemp(pathBuf.data());
+        if (fd == -1)
+        {
+            return;
+        }
+        close(fd);
+        path_ = pathBuf.data();
+    }
+
+    ~TempFile()
+    {
+        if (!path_.empty())
+        {
+            std::remove(path_.c_str());
+        }
+    }
+
+    const std::string &path() const { return path_; }
+    bool valid() const { return !path_.empty(); }
+
+private:
+    std::string path_;
+};
+
+int findJsonIntField(const std::string &obj, const std::string &key, int fallback)
+{
+    std::regex re("\\\"" + key + "\\\"\\s*:\\s*(\\d+)");
+    std::smatch match;
+    if (std::regex_search(obj, match, re) && match.size() > 1)
+    {
+        return std::stoi(match[1].str());
+    }
+    return fallback;
+}
+
+int extractOptimalComponents(const std::string &response, int userId, int fallback)
+{
+    std::regex objRe(R"(\{[^{}]*\})");
+    auto begin = std::sregex_iterator(response.begin(), response.end(), objRe);
+    auto end = std::sregex_iterator();
+    for (auto it = begin; it != end; ++it)
+    {
+        const std::string obj = it->str();
+        int uid = findJsonIntField(obj, "user_id", -1);
+        if (uid == userId)
+        {
+            return findJsonIntField(obj, "optimal_components", fallback);
+        }
+    }
+    return fallback;
+}
+
+} // namespace
 
 namespace simu5g
 {
@@ -21,7 +91,7 @@ namespace simu5g
 
     XRTrafficSource::~XRTrafficSource()
     {
-        cancelAndDelete(sendTimer);
+        cancelAndDelete(sendTimer_);
     }
 
     void XRTrafficSource::initialize(int stage)
@@ -31,18 +101,18 @@ namespace simu5g
         if (stage == INITSTAGE_LOCAL)
         {
             // Initialize parameters
-            fps = par("fps").doubleValue();
-            jitter_mean = par("jitterMean").doubleValue();
-            jitter_sd = par("jitterStd").doubleValue();
-            jitter_min = par("jitterMin").doubleValue();
-            jitter_max = par("jitterMax").doubleValue();
-            seed_val = par("jitterSeed").intValue();
-            startTime = par("startTime");
+            fps_ = par("fps").doubleValue();
+            jitter_mean_ = par("jitterMean").doubleValue();
+            jitter_sd_ = par("jitterStd").doubleValue();
+            jitter_min_ = par("jitterMin").doubleValue();
+            jitter_max_ = par("jitterMax").doubleValue();
+            seed_val_ = par("jitterSeed").intValue();
+            startTime_ = par("startTime");
 
-            localPort = par("localPort").intValue();
-            destPort = par("destPort").intValue();
-            destAddressStr = par("destAddress").stdstringValue();
-            pcaFile = par("pcaFile").stdstringValue();
+            localPort_ = par("localPort").intValue();
+            destPort_ = par("destPort").intValue();
+            destAddressStr_ = par("destAddress").stdstringValue();
+            pcaFile_ = par("pcaFile").stdstringValue();
             compressionLevel_ = par("compressionLevel").intValue();
             selectionMode_ = par("selectionMode").stdstringValue();
             prescribedFile_ = par("prescribedFile").stdstringValue();
@@ -50,12 +120,12 @@ namespace simu5g
             modelNumUsers_ = par("modelNumUsers").intValue();
             modelDefaultCqi_ = par("modelDefaultCqi").intValue();
 
-            frame_number = 0;
-            sendTimer = new cMessage("sendTimer");
+            frameNumber_ = 0;
+            sendTimer_ = new omnetpp::cMessage("sendTimer");
 
             // Register signals
-            sentPktSignal = registerSignal("sentPkt");
-            sentBytesSignal = registerSignal("sentBytes");
+            sentPktSignal_ = registerSignal("sentPkt");
+            sentBytesSignal_ = registerSignal("sentBytes");
 
             // Initialize binder pointer to nullptr
             binder_ = nullptr;
@@ -63,44 +133,43 @@ namespace simu5g
             gnbMac_ = nullptr;
 
             // Load PCA reconstruction data
-            loadPCAData(pcaFile);
+            loadPCAData(pcaFile_);
 
             // Load prescribed schedule if in prescribed mode
             if (selectionMode_ == "prescribed" && !prescribedFile_.empty())
             {
                 loadPrescribedData(prescribedFile_);
             }
-            socket.setOutputGate(gate("socketOut"));
-            socket.setCallback(this);
+            socket_.setOutputGate(gate("socketOut"));
+            socket_.setCallback(this);
         }
         else if (stage == INITSTAGE_APPLICATION_LAYER)
         {
             // Resolve destination address
-            destAddress = L3AddressResolver().resolve(destAddressStr.c_str());
+            destAddress_ = inet::L3AddressResolver().resolve(destAddressStr_.c_str());
 
-            binder_ = getBinderModule();
+            binder_ = resolveBinderModule(getSimulation());
 
             // For downlink: get DESTINATION UE's MAC ID, not source
-            if (!destAddress.isUnspecified() && destAddress.getType() == inet::L3Address::IPv4)
+            if (!destAddress_.isUnspecified() && destAddress_.getType() == inet::L3Address::IPv4)
             {
-                macNodeId_ = binder_->getMacNodeId(destAddress.toIpv4());
+                macNodeId_ = binder_->getMacNodeId(destAddress_.toIpv4());
             }
 
-            EV << "XRTrafficSource initialized with " << frames.size()
-               << " frames, FPS=" << fps << ", dest=" << destAddress
-               << ":" << destPort << ", macNodeId=" << macNodeId_
+            EV << "XRTrafficSource initialized with " << frames_.size()
+               << " frames, FPS=" << fps_ << ", dest=" << destAddress_
+               << ":" << destPort_ << ", macNodeId=" << macNodeId_
                << ", mode=" << selectionMode_ << endl;
 
             // Resolve gNB MAC module for buffer/utilization queries
             try {
-                cModule *serverModule = getParentModule();
-                cModule *networkModule = getSimulation()->getSystemModule();
-                cModule *gnbModule = networkModule->getSubmodule("gnb");
+                omnetpp::cModule *networkModule = getSimulation()->getSystemModule();
+                omnetpp::cModule *gnbModule = networkModule->getSubmodule("gnb");
                 if (gnbModule) {
-                    cModule *cellularNic = gnbModule->getSubmodule("cellularNic");
+                    omnetpp::cModule *cellularNic = gnbModule->getSubmodule("cellularNic");
                     if (cellularNic) {
                         // Try NR MAC first, then fall back to regular MAC
-                        cModule *macModule = cellularNic->getSubmodule("nrMac");
+                        omnetpp::cModule *macModule = cellularNic->getSubmodule("nrMac");
                         if (!macModule) macModule = cellularNic->getSubmodule("mac");
                         if (macModule) {
                             gnbMac_ = dynamic_cast<LteMacEnb*>(macModule);
@@ -110,53 +179,53 @@ namespace simu5g
             } catch (...) {
                 EV_WARN << "Could not resolve gNB MAC module" << endl;
             }
-            std::cout << "XRTrafficSource: gnbMac_=" << (gnbMac_ ? "resolved" : "null") << endl;
+            EV << "XRTrafficSource: gnbMac_=" << (gnbMac_ ? "resolved" : "null") << endl;
 
         }
     }
 
-    void XRTrafficSource::handleStartOperation(LifecycleOperation *operation)
+    void XRTrafficSource::handleStartOperation(inet::LifecycleOperation *operation)
     {
         // Bind socket when application is starting
-        socket.bind(localPort);
+        socket_.bind(localPort_);
 
         // Make sure destination address is resolved
-        if (destAddress.isUnspecified())
+        if (destAddress_.isUnspecified())
         {
-            destAddress = L3AddressResolver().resolve(destAddressStr.c_str());
+            destAddress_ = inet::L3AddressResolver().resolve(destAddressStr_.c_str());
         }
 
-        if (destAddress.isUnspecified())
+        if (destAddress_.isUnspecified())
         {
-            error("XRTrafficSource: Could not resolve destination address: %s", destAddressStr.c_str());
+            error("XRTrafficSource: Could not resolve destination address: %s", destAddressStr_.c_str());
             return;
         }
 
-        if (binder_ != nullptr && destAddress.getType() == inet::L3Address::IPv4)
+        if (binder_ != nullptr && destAddress_.getType() == inet::L3Address::IPv4)
         {
-            macNodeId_ = binder_->getMacNodeId(destAddress.toIpv4());
+            macNodeId_ = binder_->getMacNodeId(destAddress_.toIpv4());
         }
 
         // In model mode, store video stats in Binder so all sources
         // can gather each other's features for batched model queries
         if (selectionMode_ == "model" && binder_ != nullptr && macNodeId_ != NODEID_NONE)
         {
-            binder_->setXRVideoStats(macNodeId_, meanTrafficSize_, stdTrafficSize_, fps);
-            std::cout << "XRTrafficSource: Stored video stats in Binder for UE "
-                      << macNodeId_ << " (mean=" << meanTrafficSize_
-                      << ", std=" << stdTrafficSize_ << ", fps=" << fps << ")" << endl;
+            binder_->setXRVideoStats(macNodeId_, meanTrafficSize_, stdTrafficSize_, fps_);
+            EV << "XRTrafficSource: Stored video stats in Binder for UE "
+               << macNodeId_ << " (mean=" << meanTrafficSize_
+               << ", std=" << stdTrafficSize_ << ", fps=" << fps_ << ")" << endl;
         }
 
         // Connect to the destination
-        socket.connect(destAddress, destPort);
+        socket_.connect(destAddress_, destPort_);
 
         // Schedule first packet after socket is bound and application is started
         if (getFrameCount() > 0)
         {
-            double jitter_ms = tran_gau_num(jitter_mean, jitter_sd, jitter_min, jitter_max);
-            double sendDelay = (1.0 / fps) + (jitter_ms / 1000.0);
-            simtime_t firstSendTime = simTime() + startTime + sendDelay;
-            scheduleAt(firstSendTime, sendTimer);
+            double jitter_ms = tran_gau_num(jitter_mean_, jitter_sd_, jitter_min_, jitter_max_);
+            double sendDelay = (1.0 / fps_) + (jitter_ms / 1000.0);
+            omnetpp::simtime_t firstSendTime = omnetpp::simTime() + startTime_ + sendDelay;
+            scheduleAt(firstSendTime, sendTimer_);
             EV << "First packet scheduled at " << firstSendTime << endl;
         }
         else
@@ -165,24 +234,24 @@ namespace simu5g
         }
     }
 
-    void XRTrafficSource::handleStopOperation(LifecycleOperation *operation)
+    void XRTrafficSource::handleStopOperation(inet::LifecycleOperation *operation)
     {
-        cancelEvent(sendTimer);
-        socket.close();
+        cancelEvent(sendTimer_);
+        socket_.close();
     }
 
-    void XRTrafficSource::handleCrashOperation(LifecycleOperation *operation)
+    void XRTrafficSource::handleCrashOperation(inet::LifecycleOperation *operation)
     {
-        cancelEvent(sendTimer);
-        if (socket.isOpen())
-            socket.destroy();
+        cancelEvent(sendTimer_);
+        if (socket_.isOpen())
+            socket_.destroy();
     }
 
-    void XRTrafficSource::handleMessageWhenUp(cMessage *msg)
+    void XRTrafficSource::handleMessageWhenUp(omnetpp::cMessage *msg)
     {
         if (msg->isSelfMessage())
         {
-            if (msg == sendTimer)
+            if (msg == sendTimer_)
             {
                 sendPacket();
                 scheduleNextPacket();
@@ -191,151 +260,128 @@ namespace simu5g
         else
         {
             // Process incoming socket messages
-            socket.processMessage(msg);
+            socket_.processMessage(msg);
         }
     }
 
-    void XRTrafficSource::sendPacket()
+    bool XRTrafficSource::resolveFrameInfo(int frameIdx, FrameInfo &frameInfo)
     {
-        int totalFrames = getFrameCount();
-        if (frame_number >= totalFrames)
+        if (selectionMode_ == "fixed")
         {
-            EV << "All frames sent, stopping transmission" << endl;
-            return;
+            if (frameIdx >= static_cast<int>(frames_.size()))
+            {
+                EV_ERROR << "No frame data for fixed mode at index " << frameIdx << endl;
+                return false;
+            }
+            frameInfo = frames_[frameIdx];
+            return true;
         }
 
-        FrameInfo frameInfo;
+        if (frameIdx >= static_cast<int>(frameNumbers_.size()))
+        {
+            EV_ERROR << "No frame data at index " << frameIdx << endl;
+            return false;
+        }
+
+        if (availableComponents_.empty())
+        {
+            EV_ERROR << "No compression levels loaded for selection" << endl;
+            return false;
+        }
+
+        int frameNum = frameNumbers_[frameIdx];
+        int chosenComponents = 0;
 
         if (selectionMode_ == "random")
         {
-            // Random per-frame compression selection
-            int frameNum = frameNumbers_[frame_number];
-            int compIdx = intuniform(0, availableComponents_.size() - 1);
-            int chosenComponents = availableComponents_[compIdx];
-
-            auto frameIt = allFrameData_.find(frameNum);
-            if (frameIt != allFrameData_.end())
-            {
-                auto compIt = frameIt->second.find(chosenComponents);
-                if (compIt != frameIt->second.end())
-                {
-                    frameInfo = compIt->second;
-                }
-                else
-                {
-                    EV_ERROR << "No data for frame " << frameNum
-                             << " at components=" << chosenComponents << endl;
-                    frame_number++;
-                    return;
-                }
-            }
-            else
-            {
-                EV_ERROR << "No data for frame " << frameNum << endl;
-                frame_number++;
-                return;
-            }
+            int compIdx = omnetpp::intuniform(0, static_cast<int>(availableComponents_.size()) - 1);
+            chosenComponents = availableComponents_[compIdx];
         }
         else if (selectionMode_ == "prescribed")
         {
-            // Prescribed mode: look up components from prescribed schedule
-            int frameNum = frameNumbers_[frame_number];
             auto prescIt = prescribedComponents_.find(frameNum);
-            int chosenComponents;
             if (prescIt != prescribedComponents_.end())
             {
                 chosenComponents = prescIt->second;
             }
             else
             {
-                // Fallback: use middle compression level
                 chosenComponents = availableComponents_[availableComponents_.size() / 2];
                 EV_WARN << "No prescribed level for frame " << frameNum
                         << ", using fallback=" << chosenComponents << endl;
             }
-
-            auto frameIt = allFrameData_.find(frameNum);
-            if (frameIt != allFrameData_.end())
-            {
-                auto compIt = frameIt->second.find(chosenComponents);
-                if (compIt != frameIt->second.end())
-                {
-                    frameInfo = compIt->second;
-                }
-                else
-                {
-                    EV_ERROR << "No PCA data for frame " << frameNum
-                             << " at prescribed components=" << chosenComponents << endl;
-                    frame_number++;
-                    return;
-                }
-            }
-            else
-            {
-                EV_ERROR << "No PCA data for frame " << frameNum << endl;
-                frame_number++;
-                return;
-            }
         }
         else if (selectionMode_ == "model")
         {
-            // Model mode: query the model API with live CQI from Binder
-            int frameNum = frameNumbers_[frame_number];
-            int chosenComponents = queryModelServer(frameNum);
-
-            auto frameIt = allFrameData_.find(frameNum);
-            if (frameIt != allFrameData_.end())
-            {
-                auto compIt = frameIt->second.find(chosenComponents);
-                if (compIt != frameIt->second.end())
-                {
-                    frameInfo = compIt->second;
-                }
-                else
-                {
-                    // Fallback: find closest available compression level
-                    int closest = availableComponents_[0];
-                    int minDist = abs(chosenComponents - closest);
-                    for (int c : availableComponents_)
-                    {
-                        int dist = abs(chosenComponents - c);
-                        if (dist < minDist) { minDist = dist; closest = c; }
-                    }
-                    auto closestIt = frameIt->second.find(closest);
-                    if (closestIt != frameIt->second.end())
-                    {
-                        frameInfo = closestIt->second;
-                        EV_WARN << "Model suggested components=" << chosenComponents
-                                << " not in data, using closest=" << closest << endl;
-                    }
-                    else
-                    {
-                        EV_ERROR << "No data for frame " << frameNum << endl;
-                        frame_number++;
-                        return;
-                    }
-                }
-            }
-            else
-            {
-                EV_ERROR << "No data for frame " << frameNum << endl;
-                frame_number++;
-                return;
-            }
+            chosenComponents = queryModelServer(frameNum);
         }
         else
         {
-            // Fixed mode: use legacy frames vector
-            frameInfo = frames[frame_number];
+            EV_ERROR << "Unknown selection mode: " << selectionMode_ << endl;
+            return false;
+        }
+
+        auto frameIt = allFrameData_.find(frameNum);
+        if (frameIt == allFrameData_.end())
+        {
+            EV_ERROR << "No PCA data for frame " << frameNum << endl;
+            return false;
+        }
+
+        auto compIt = frameIt->second.find(chosenComponents);
+        if (compIt != frameIt->second.end())
+        {
+            frameInfo = compIt->second;
+            return true;
+        }
+
+        if (selectionMode_ == "model")
+        {
+            int closest = availableComponents_[0];
+            int minDist = std::abs(chosenComponents - closest);
+            for (int c : availableComponents_)
+            {
+                int dist = std::abs(chosenComponents - c);
+                if (dist < minDist) { minDist = dist; closest = c; }
+            }
+            auto closestIt = frameIt->second.find(closest);
+            if (closestIt != frameIt->second.end())
+            {
+                frameInfo = closestIt->second;
+                EV_WARN << "Model suggested components=" << chosenComponents
+                        << " not in data, using closest=" << closest << endl;
+                return true;
+            }
+        }
+
+        EV_ERROR << "No PCA data for frame " << frameNum
+                 << " at components=" << chosenComponents << endl;
+        return false;
+    }
+
+    void XRTrafficSource::sendPacket()
+    {
+        int totalFrames = getFrameCount();
+        if (frameNumber_ >= totalFrames)
+        {
+            EV << "All frames sent, stopping transmission" << endl;
+            return;
+        }
+
+        FrameInfo frameInfo;
+        if (!resolveFrameInfo(frameNumber_, frameInfo))
+        {
+            frameNumber_++;
+            return;
         }
 
         // Update binder with XR metrics for this frame
-        if (frameInfo.frame_number != lastFrameUpdated)
+        if (frameInfo.frameNumber_ != lastFrameUpdated_)
         {
             if (binder_ != nullptr && macNodeId_ != NODEID_NONE)
             {
-                binder_->setXRMetrics(macNodeId_, frameInfo.frame_number, frameInfo.mse, frameInfo.size_bytes);
-                lastFrameUpdated = frameInfo.frame_number;
+                binder_->setXRMetrics(macNodeId_, frameInfo.frameNumber_, frameInfo.mse, frameInfo.size_bytes);
+                lastFrameUpdated_ = frameInfo.frameNumber_;
             }
         }
 
@@ -356,35 +402,35 @@ namespace simu5g
             remainingBytes -= fragSize;
 
             // Create INET packet with descriptive name
-            char msgName[64];
-            sprintf(msgName, "XRFrame-F%d-C%d-Frag%d",
-                    frameInfo.frame_number, frameInfo.components, fragIndex);
-            Packet *packet = new Packet(msgName);
+                char msgName[64];
+                std::snprintf(msgName, sizeof(msgName), "XRFrame-F%d-C%d-Frag%d",
+                    frameInfo.frameNumber_, frameInfo.components, fragIndex);
+                inet::Packet *packet = new inet::Packet(msgName);
 
             // Create and populate XR header
-            auto header = makeShared<XRHeader>();
-            header->setFrameNumber(frameInfo.frame_number);
+            auto header = inet::makeShared<XRHeader>();
+            header->setFrameNumber(frameInfo.frameNumber_);
             header->setPcaComponents(frameInfo.components);
             header->setMse(frameInfo.mse);
             header->setSizeBytes(frameInfo.size_bytes);
-            header->setGenTime(simTime().dbl());
+            header->setGenTime(omnetpp::simTime().dbl());
             header->setFragIndex(fragIndex);
             header->setTotalFragments(totalFragments);
-            header->setChunkLength(B(32)); // Fixed header size
+            header->setChunkLength(inet::B(32)); // Fixed header size
 
             // Add header to packet
             packet->insertAtFront(header);
 
             // Add payload data
-            const auto &payload = makeShared<ByteCountChunk>(B(fragSize));
+            const auto &payload = inet::makeShared<inet::ByteCountChunk>(inet::B(fragSize));
             packet->insertAtBack(payload);
 
             // Add timestamp tag
-            auto creationTimeTag = packet->addTag<CreationTimeTag>();
-            creationTimeTag->setCreationTime(simTime());
+            auto creationTimeTag = packet->addTag<inet::CreationTimeTag>();
+            creationTimeTag->setCreationTime(omnetpp::simTime());
 
             // Check if socket is open before sending
-            if (!socket.isOpen())
+            if (!socket_.isOpen())
             {
                 EV_ERROR << "Socket not open, cannot send packet" << endl;
                 delete packet;
@@ -392,49 +438,49 @@ namespace simu5g
             }
 
             // Send via UDP socket (INET takes ownership of the packet)
-            socket.send(packet);
+            socket_.send(packet);
 
             // Update statistics (only once per frame)
             if (fragIndex == 0)
             {
-                emit(sentPktSignal, 1);
-                emit(sentBytesSignal, (long)frameInfo.size_bytes);
+                emit(sentPktSignal_, 1);
+                emit(sentBytesSignal_, (long)frameInfo.size_bytes);
             }
         }
 
-        EV << "Sent frame " << frameInfo.frame_number
+        EV << "Sent frame " << frameInfo.frameNumber_
            << ": components=" << frameInfo.components
            << ", size=" << frameInfo.size_bytes << " bytes"
            << ", MSE=" << frameInfo.mse
            << ", fragments=" << totalFragments
            << ", mode=" << selectionMode_ << endl;
 
-        frame_number++;
+        frameNumber_++;
     }
 
     void XRTrafficSource::scheduleNextPacket()
     {
-        if (frame_number >= getFrameCount())
+        if (frameNumber_ >= getFrameCount())
         {
             return;
         }
 
         // Calculate next send time with jitter
-        double jitter_ms = tran_gau_num(jitter_mean, jitter_sd, jitter_min, jitter_max);
-        double intervalWithJitter = (1.0 / fps) + (jitter_ms / 1000.0);
+        double jitter_ms = tran_gau_num(jitter_mean_, jitter_sd_, jitter_min_, jitter_max_);
+        double intervalWithJitter = (1.0 / fps_) + (jitter_ms / 1000.0);
 
-        scheduleAt(simTime() + intervalWithJitter, sendTimer);
+        scheduleAt(omnetpp::simTime() + intervalWithJitter, sendTimer_);
     }
 
     double XRTrafficSource::tran_gau_num(double mean, double sd, double minv, double maxv)
     {
         // Truncated Gaussian using OMNeT++ normal() function
-        double x = normal(mean, sd, seed_val);
+        double x = omnetpp::normal(mean, sd, seed_val_);
         int attempts = 0;
 
         while ((x < minv || x > maxv) && attempts < 1000)
         {
-            x = normal(mean, sd, seed_val);
+            x = omnetpp::normal(mean, sd, seed_val_);
             attempts++;
         }
 
@@ -447,9 +493,25 @@ namespace simu5g
         return x;
     }
 
-    void XRTrafficSource::loadPCAData(const string &pcaFile)
+    void XRTrafficSource::loadPCAData(const std::string &pcaFile)
     {
-        ifstream f(pcaFile);
+        frames_.clear();
+        allFrameData_.clear();
+        frameNumbers_.clear();
+        availableComponents_.clear();
+        frameComplexity_.clear();
+        frameErrorVector_.clear();
+        meanTrafficSize_ = 0.0;
+        stdTrafficSize_ = 0.0;
+
+        parseCSV(pcaFile);
+        buildErrorVectors();
+        computeVideoStats();
+    }
+
+    void XRTrafficSource::parseCSV(const std::string &pcaFile)
+    {
+        std::ifstream f(pcaFile);
         if (!f.is_open())
         {
             EV_ERROR << "Cannot open PCA data file: " << pcaFile << endl;
@@ -457,34 +519,30 @@ namespace simu5g
             return;
         }
 
-        string line;
-        // Skip header line
-        if (!getline(f, line))
+        std::string line;
+        if (!std::getline(f, line))
         {
             EV_ERROR << "Empty PCA file: " << pcaFile << endl;
             return;
         }
 
-        // Parse data lines: frame,components,mse,size_bytes
         int lineNum = 1;
         std::set<int> uniqueFrames;
         std::set<int> uniqueComponents;
 
-        while (getline(f, line))
+        while (std::getline(f, line))
         {
             lineNum++;
             if (line.empty())
                 continue;
 
-            // Parse CSV line
-            stringstream ss(line);
-            string field;
-            vector<string> fields;
+            std::stringstream ss(line);
+            std::string field;
+            std::vector<std::string> fields;
 
-            while (getline(ss, field, ','))
+            while (std::getline(ss, field, ','))
             {
-                // Trim whitespace
-                field.erase(remove_if(field.begin(), field.end(), ::isspace), field.end());
+                field.erase(std::remove_if(field.begin(), field.end(), ::isspace), field.end());
                 fields.push_back(field);
             }
 
@@ -498,46 +556,37 @@ namespace simu5g
             try
             {
                 FrameInfo fi;
-                fi.frame_number = stoi(fields[0]);
-                fi.components = stoi(fields[1]);
-                fi.mse = stod(fields[2]);
-                fi.size_bytes = stoi(fields[3]);
-
-                // Columns from our python scripts: 
-                // frame(0), components(1), mse(2), size_bytes(3), ...
-                // Error vector is built from allFrameData_ after loading (post-processing step).
+                fi.frameNumber_ = std::stoi(fields[0]);
+                fi.components = std::stoi(fields[1]);
+                fi.mse = std::stod(fields[2]);
+                fi.size_bytes = std::stoi(fields[3]);
 
                 if (fields.size() >= 5)
                 {
-                    double fc_or_at80 = stod(fields[4]);
-                    
-                    // Keep frameComplexity population for legacy compatibility
-                    if (frameComplexity_.find(fi.frame_number) == frameComplexity_.end())
+                    double fc_or_at80 = std::stod(fields[4]);
+                    if (frameComplexity_.find(fi.frameNumber_) == frameComplexity_.end())
                     {
-                        frameComplexity_[fi.frame_number] = fc_or_at80;
+                        frameComplexity_[fi.frameNumber_] = fc_or_at80;
                     }
                 }
 
-                // Always store in allFrameData_ for any selection mode
-                allFrameData_[fi.frame_number][fi.components] = fi;
+                allFrameData_[fi.frameNumber_][fi.components] = fi;
 
-                // Track unique frames and components (exclude uncompressed)
-                uniqueFrames.insert(fi.frame_number);
-                if (fi.components != 150528 && fi.components != 0)  // Exclude uncompressed
+                uniqueFrames.insert(fi.frameNumber_);
+                if (fi.components != UNCOMPRESSED_COMPONENTS && fi.components != 0)
                 {
                     uniqueComponents.insert(fi.components);
                 }
 
-                // For "fixed" mode: also populate legacy frames vector
                 if (selectionMode_ == "fixed")
                 {
                     if (compressionLevel_ == 0 || fi.components == compressionLevel_)
                     {
-                        frames.push_back(fi);
+                        frames_.push_back(fi);
                     }
                 }
             }
-            catch (const exception &e)
+            catch (const std::exception &e)
             {
                 EV_WARN << "Error parsing line " << lineNum << " in " << pcaFile
                         << ": " << e.what() << endl;
@@ -546,39 +595,17 @@ namespace simu5g
 
         f.close();
 
-        // Build sorted vectors from sets
         frameNumbers_.assign(uniqueFrames.begin(), uniqueFrames.end());
         availableComponents_.assign(uniqueComponents.begin(), uniqueComponents.end());
 
-        int totalLoaded = (selectionMode_ == "random") ? (int)frameNumbers_.size() : (int)frames.size();
+        int totalLoaded = (selectionMode_ == "random") ? static_cast<int>(frameNumbers_.size())
+                                                        : static_cast<int>(frames_.size());
 
         EV << "Loaded PCA data from " << pcaFile
            << ": " << uniqueFrames.size() << " unique frames"
            << ", " << availableComponents_.size() << " compression levels"
            << ", selectionMode=" << selectionMode_
            << ", effective frame count=" << totalLoaded << endl;
-
-        // Post-process: build per-frame error vector from allFrameData_
-        // For each unique frame, extract MSE at each of the 16 CLs (5,10,...,80)
-        {
-            const int clStep = 5;
-            for (const auto &framePair : allFrameData_)
-            {
-                int fn = framePair.first;
-                std::vector<double> errVec(NUM_CL_LEVELS, 0.0);
-                for (int k = 0; k < NUM_CL_LEVELS; k++)
-                {
-                    int cl = (k + 1) * clStep;  // 5, 10, ..., 80
-                    auto compIt = framePair.second.find(cl);
-                    if (compIt != framePair.second.end())
-                    {
-                        errVec[k] = compIt->second.mse;
-                    }
-                }
-                frameErrorVector_[fn] = errVec;
-            }
-            EV << "  Built error vectors for " << frameErrorVector_.size() << " frames (" << NUM_CL_LEVELS << " CLs each)" << endl;
-        }
 
         if (selectionMode_ == "random")
         {
@@ -587,10 +614,9 @@ namespace simu5g
             EV << endl;
         }
 
-        if (!frames.empty() || !frameNumbers_.empty())
+        if (!frames_.empty() || !frameNumbers_.empty())
         {
-            // Calculate summary statistics from allFrameData_
-            double avgMSE = 0;
+            double avgMSE = 0.0;
             int count = 0;
             for (const auto &framePair : allFrameData_)
             {
@@ -603,31 +629,56 @@ namespace simu5g
             if (count > 0) avgMSE /= count;
             EV << "  Overall average MSE across all levels: " << avgMSE << endl;
         }
-
-        // Compute mean and std of frame_complexity for model mode
-        if (!frameComplexity_.empty())
-        {
-            double sumFC = 0;
-            for (const auto &p : frameComplexity_) sumFC += p.second;
-            meanTrafficSize_ = sumFC / frameComplexity_.size();
-
-            double sumSqDiff = 0;
-            for (const auto &p : frameComplexity_)
-            {
-                double diff = p.second - meanTrafficSize_;
-                sumSqDiff += diff * diff;
-            }
-            stdTrafficSize_ = sqrt(sumSqDiff / frameComplexity_.size());
-
-            EV << "  Video stats: meanTrafficSize=" << meanTrafficSize_
-               << ", stdTrafficSize=" << stdTrafficSize_
-               << ", frames with complexity=" << frameComplexity_.size() << endl;
-        }
     }
 
-    void XRTrafficSource::loadPrescribedData(const string &prescribedFile)
+    void XRTrafficSource::buildErrorVectors()
     {
-        ifstream f(prescribedFile);
+        for (const auto &framePair : allFrameData_)
+        {
+            int fn = framePair.first;
+            std::vector<double> errVec(NUM_CL_LEVELS, 0.0);
+            for (int k = 0; k < NUM_CL_LEVELS; k++)
+            {
+                int cl = (k + 1) * CL_STEP;
+                auto compIt = framePair.second.find(cl);
+                if (compIt != framePair.second.end())
+                {
+                    errVec[k] = compIt->second.mse;
+                }
+            }
+            frameErrorVector_[fn] = errVec;
+        }
+        EV << "  Built error vectors for " << frameErrorVector_.size()
+           << " frames (" << NUM_CL_LEVELS << " CLs each)" << endl;
+    }
+
+    void XRTrafficSource::computeVideoStats()
+    {
+        if (frameComplexity_.empty())
+        {
+            return;
+        }
+
+        double sumFC = 0.0;
+        for (const auto &p : frameComplexity_) sumFC += p.second;
+        meanTrafficSize_ = sumFC / frameComplexity_.size();
+
+        double sumSqDiff = 0.0;
+        for (const auto &p : frameComplexity_)
+        {
+            double diff = p.second - meanTrafficSize_;
+            sumSqDiff += diff * diff;
+        }
+        stdTrafficSize_ = std::sqrt(sumSqDiff / frameComplexity_.size());
+
+        EV << "  Video stats: meanTrafficSize=" << meanTrafficSize_
+           << ", stdTrafficSize=" << stdTrafficSize_
+           << ", frames with complexity=" << frameComplexity_.size() << endl;
+    }
+
+    void XRTrafficSource::loadPrescribedData(const std::string &prescribedFile)
+    {
+        std::ifstream f(prescribedFile);
         if (!f.is_open())
         {
             EV_ERROR << "Cannot open prescribed file: " << prescribedFile << endl;
@@ -635,27 +686,27 @@ namespace simu5g
             return;
         }
 
-        string line;
+        std::string line;
         // Skip header line (frame,components)
-        if (!getline(f, line))
+        if (!std::getline(f, line))
         {
             EV_ERROR << "Empty prescribed file: " << prescribedFile << endl;
             return;
         }
 
         int loaded = 0;
-        while (getline(f, line))
+        while (std::getline(f, line))
         {
             if (line.empty())
                 continue;
 
-            stringstream ss(line);
-            string field;
-            vector<string> fields;
+            std::stringstream ss(line);
+            std::string field;
+            std::vector<std::string> fields;
 
-            while (getline(ss, field, ','))
+            while (std::getline(ss, field, ','))
             {
-                field.erase(remove_if(field.begin(), field.end(), ::isspace), field.end());
+                field.erase(std::remove_if(field.begin(), field.end(), ::isspace), field.end());
                 fields.push_back(field);
             }
 
@@ -664,12 +715,12 @@ namespace simu5g
 
             try
             {
-                int frameNum = stoi(fields[0]);
-                int components = stoi(fields[1]);
+                int frameNum = std::stoi(fields[0]);
+                int components = std::stoi(fields[1]);
                 prescribedComponents_[frameNum] = components;
                 loaded++;
             }
-            catch (const exception &e)
+            catch (const std::exception &e)
             {
                 EV_WARN << "Error parsing prescribed file line: " << e.what() << endl;
             }
@@ -685,7 +736,7 @@ namespace simu5g
         if (selectionMode_ == "random" || selectionMode_ == "prescribed" || selectionMode_ == "model")
             return (int)frameNumbers_.size();
         else
-            return (int)frames.size();
+            return (int)frames_.size();
     }
 
     void XRTrafficSource::updateGnbMetrics()
@@ -731,125 +782,64 @@ namespace simu5g
     void XRTrafficSource::finish()
     {
         ApplicationBase::finish();
-        EV << "XRTrafficSource finished. Sent " << frame_number << " frames." << endl;
+        EV << "XRTrafficSource finished. Sent " << frameNumber_ << " frames_." << endl;
     }
 
     // UdpSocket::ICallback implementations
-    void XRTrafficSource::socketDataArrived(UdpSocket *socket, Packet *packet)
+    void XRTrafficSource::socketDataArrived(inet::UdpSocket *socket, inet::Packet *packet)
     {
         // This is a traffic source, we don't expect to receive data
         EV_WARN << "Received unexpected packet: " << packet->getName() << endl;
         delete packet;
     }
 
-    void XRTrafficSource::socketErrorArrived(UdpSocket *socket, Indication *indication)
+    void XRTrafficSource::socketErrorArrived(inet::UdpSocket *socket, inet::Indication *indication)
     {
         EV_WARN << "Socket error occurred" << endl;
         delete indication;
     }
 
-    void XRTrafficSource::socketClosed(UdpSocket *socket)
+    void XRTrafficSource::socketClosed(inet::UdpSocket *socket)
     {
         EV << "Socket closed" << endl;
     }
 
-    Binder *XRTrafficSource::getBinderModule()
-    {
-        // Method 1: Direct path lookup
-        Binder *binder = dynamic_cast<Binder *>(
-            getSimulation()->getModuleByPath("binder"));
-
-        if (binder != nullptr)
-        {
-            return binder;
-        }
-
-        // Method 2: Search for Binder type
-        cModule *networkModule = getSimulation()->getSystemModule();
-        for (cModule::SubmoduleIterator it(networkModule); !it.end(); ++it)
-        {
-            Binder *b = dynamic_cast<Binder *>(*it);
-            if (b != nullptr)
-            {
-                return b;
-            }
-        }
-
-        return nullptr;
-    }
-
-    MacNodeId XRTrafficSource::getMacNodeIdFromModule()
-    {
-        cModule *ueModule = getParentModule();
-
-        // Try different NIC names
-        const char *nicNames[] = {"cellularNic", "nrNic", "nic"};
-
-        for (const char *nicName : nicNames)
-        {
-            cModule *nic = ueModule->getSubmodule(nicName);
-            if (nic != nullptr)
-            {
-                cModule *mac = nic->getSubmodule("mac");
-                if (mac != nullptr)
-                {
-                    // Try different parameter names
-                    if (mac->hasPar("macNodeId"))
-                    {
-                        return MacNodeId(mac->par("macNodeId").intValue());
-                    }
-                    if (mac->hasPar("nrMacNodeId"))
-                    {
-                        return MacNodeId(mac->par("nrMacNodeId").intValue());
-                    }
-                }
-            }
-        }
-
-        // Fallback: IP address lookup
-        if (binder_ != nullptr)
-        {
-            inet::L3AddressResolver resolver;
-            inet::L3Address addr = resolver.addressOf(ueModule);
-            if (!addr.isUnspecified() && addr.getType() == inet::L3Address::IPv4)
-            {
-                return binder_->getMacNodeId(addr.toIpv4());
-            }
-        }
-
-        return NODEID_NONE;
-    }
-
     std::string XRTrafficSource::httpPost(const std::string& url, const std::string& jsonPayload)
     {
-        // Write payload to a temp file to avoid shell quoting issues
-        std::string tmpFile = "/tmp/xr_model_payload_" + std::to_string(getSimulation()->getUniqueNumber()) + ".json";
+        TempFile tmpFile("xr_model_payload");
+        if (!tmpFile.valid())
         {
-            std::ofstream ofs(tmpFile);
-            ofs << jsonPayload;
-            ofs.close();
+            EV_ERROR << "httpPost: failed to create temp file" << endl;
+            return "";
         }
 
-        // Use wget (curl not always available)
-        std::string command = "wget -qO- --header='Content-Type: application/json' "
-                              "--post-file='" + tmpFile + "' '" + url + "' 2>/dev/null";
+        {
+            std::ofstream ofs(tmpFile.path());
+            if (!ofs.is_open())
+            {
+                EV_ERROR << "httpPost: failed to open temp file" << endl;
+                return "";
+            }
+            ofs << jsonPayload;
+        }
 
-        FILE *pipe = popen(command.c_str(), "r");
+        std::string command = "wget -qO- --header='Content-Type: application/json' "
+                              "--post-file='" + tmpFile.path() + "' '" + url + "' 2>/dev/null";
+
+        FILE *pipe = ::popen(command.c_str(), "r");
         if (!pipe)
         {
             EV_ERROR << "httpPost: popen failed for " << url << endl;
-            std::remove(tmpFile.c_str());
             return "";
         }
 
         std::string result;
         char buffer[4096];
-        while (fgets(buffer, sizeof(buffer), pipe) != nullptr)
+        while (::fgets(buffer, sizeof(buffer), pipe) != nullptr)
         {
             result += buffer;
         }
-        int status = pclose(pipe);
-        std::remove(tmpFile.c_str());
+        int status = ::pclose(pipe);
 
         if (status != 0)
         {
@@ -959,42 +949,12 @@ namespace simu5g
             return availableComponents_[availableComponents_.size() / 2];
         }
 
-        // Parse response JSON to extract our user's optimal_components.
-        // Response format: {"predictions": [{"user_id": 0, "optimal_components": 200, ...}, ...]}
-        // Simple JSON extraction without a library:
-        int chosenComponents = availableComponents_[availableComponents_.size() / 2];
-
-        // Find the prediction for our user_id
-        std::string searchKey = "\"user_id\":" + std::to_string(myIndex);
-        size_t pos = response.find(searchKey);
-        if (pos != std::string::npos)
+        int fallbackComponents = availableComponents_[availableComponents_.size() / 2];
+        int chosenComponents = extractOptimalComponents(response, myIndex, fallbackComponents);
+        if (chosenComponents == fallbackComponents)
         {
-            // Find "optimal_components": NNN after this position
-            std::string compKey = "\"optimal_components\":";
-            size_t compPos = response.find(compKey, pos);
-            if (compPos != std::string::npos)
-            {
-                compPos += compKey.length();
-                // Skip whitespace
-                while (compPos < response.size() && (response[compPos] == ' ' || response[compPos] == '\t'))
-                    compPos++;
-                // Read the integer
-                std::string numStr;
-                while (compPos < response.size() && std::isdigit(response[compPos]))
-                {
-                    numStr += response[compPos];
-                    compPos++;
-                }
-                if (!numStr.empty())
-                {
-                    chosenComponents = std::stoi(numStr);
-                }
-            }
-        }
-        else
-        {
-            EV_WARN << "queryModelServer: Could not find user_id=" << myIndex
-                    << " in response: " << response.substr(0, 200) << endl;
+            EV_WARN << "queryModelServer: Using fallback components=" << fallbackComponents
+                    << " for user_id=" << myIndex << endl;
         }
 
         EV << "queryModelServer: frame=" << frameNum
